@@ -449,14 +449,14 @@ class BookingDatabase:
             return cursor.rowcount > 0
 
     @staticmethod
-    def finalize_booking_from_payment(invoice_id: str) -> bool:
+    def finalize_booking_from_payment(invoice_id: str) -> Optional[int]:
         """Move a paid pending reservation into the confirmed bookings table."""
         pending = BookingDatabase.get_pending_payment_by_invoice(invoice_id)
         if not pending:
-            return False
+            return None
 
         if pending["status"] == "paid":
-            return True
+            return None
 
         booking_payload = (
             pending["user_id"],
@@ -502,7 +502,7 @@ class BookingDatabase:
                 )
 
                 conn.commit()
-            return True
+            return booking_id
         except sqlite3.IntegrityError:
             with BookingDatabase._connect() as conn:
                 cursor = conn.cursor()
@@ -515,9 +515,29 @@ class BookingDatabase:
                     """,
                     (_utc_now_str(), invoice_id),
                 )
-            return False
+            return None
         except sqlite3.Error:
-            return False
+            return None
+
+    @staticmethod
+    def cancel_booking(booking_id: int, master_telegram_id: int) -> Optional[dict]:
+        """Delete a booking only if it belongs to the given master."""
+        with BookingDatabase._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, user_id, full_name, phone_number, service, booking_date, booking_time
+                FROM bookings
+                WHERE id = ? AND master_telegram_id = ?
+                """,
+                (booking_id, master_telegram_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            cursor.execute("DELETE FROM bookings WHERE id = ?", (booking_id,))
+            return dict(row)
 
     @staticmethod
     def save_booking(

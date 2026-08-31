@@ -448,18 +448,27 @@ async def notify_master(master_telegram_id: int | None, booking_info: dict):
         return
 
     client_telegram_id = booking_info.get("client_telegram_id")
-    reply_markup = None
+    booking_id = booking_info.get("booking_id")
+    inline_rows = []
     if client_telegram_id:
-        reply_markup = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="Написати клієнту",
-                        url=f"tg://user?id={client_telegram_id}",
-                    )
-                ]
+        inline_rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Написати клієнту",
+                    url=f"tg://user?id={client_telegram_id}",
+                )
             ]
         )
+    if booking_id:
+        inline_rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Скасувати запис",
+                    callback_data=f"cancel_booking:{booking_id}",
+                )
+            ]
+        )
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=inline_rows) if inline_rows else None
 
     date_obj = datetime.strptime(booking_info["booking_date"], "%Y-%m-%d")
     date_display = date_obj.strftime("%d.%m.%Y")
@@ -479,6 +488,40 @@ async def notify_master(master_telegram_id: int | None, booking_info: dict):
         logger.warning("Failed to notify master %s about booking success: %s", master_telegram_id, exc)
 
 
+async def notify_client_about_cancellation(booking: dict):
+    date_obj = datetime.strptime(booking["booking_date"], "%Y-%m-%d")
+    date_display = date_obj.strftime("%d.%m.%Y")
+    message = (
+        "❌ Твій запис скасовано майстром.\n\n"
+        f"📅 <b>{date_display}</b>\n"
+        f"🕒 <b>{booking['booking_time']}</b>\n"
+        f"💅 <b>{booking['service']}</b>\n\n"
+        "Якщо хочеш, можеш записатися на інший час."
+    )
+    try:
+        await bot.send_message(booking["user_id"], message, parse_mode="HTML")
+    except Exception as exc:
+        logger.warning("Failed to notify client %s about cancellation: %s", booking["user_id"], exc)
+
+
+@dp.callback_query(F.data.startswith("cancel_booking:"))
+async def cancel_booking_handler(callback: types.CallbackQuery, state: FSMContext):
+    try:
+        booking_id = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        await callback.answer("Некоректний ідентифікатор запису.", show_alert=True)
+        return
+
+    deleted = BookingDatabase.cancel_booking(booking_id, callback.from_user.id)
+    if not deleted:
+        await callback.answer("Запис не знайдено або він належить іншому майстру.", show_alert=True)
+        return
+
+    await safe_edit_text(callback.message, "Запис скасовано ✅", reply_markup=None)
+    await callback.answer()
+    await notify_client_about_cancellation(deleted)
+
+
 async def process_payment_status(order_reference: str, source: str) -> dict:
     pending = BookingDatabase.get_pending_payment_by_request(order_reference)
     if not pending:
@@ -495,8 +538,8 @@ async def process_payment_status(order_reference: str, source: str) -> dict:
 
     if status == "approved":
         was_paid = pending["status"] == "paid"
-        finalized = BookingDatabase.finalize_booking_from_payment(order_reference)
-        if finalized and not was_paid:
+        booking_id = BookingDatabase.finalize_booking_from_payment(order_reference)
+        if booking_id is not None and not was_paid:
             await notify_booking_confirmed(pending)
             await notify_master(
                 pending.get("master_telegram_id"),
@@ -508,9 +551,10 @@ async def process_payment_status(order_reference: str, source: str) -> dict:
                     "booking_date": pending.get("booking_date"),
                     "booking_time": pending.get("booking_time"),
                     "payment_status": "paid",
+                    "booking_id": booking_id,
                 },
             )
-        if finalized or was_paid:
+        if booking_id is not None or was_paid:
             return {"ok": True, "status": status, "pending": pending, "payload": status_payload}
         return {"ok": False, "status": status, "reason": "booking_conflict", "pending": pending, "payload": status_payload}
 
