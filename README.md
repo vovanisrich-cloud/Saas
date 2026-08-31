@@ -80,6 +80,20 @@ The bot now works in two steps:
 2. The bot sends `Для підтвердження запису внесіть передоплату 200 грн` and shows a payment button.
 3. The slot is saved in the database only after WayForPay reports `Approved` via webhook or status check.
 
+### Reservation TTL
+
+`RESERVATION_TTL_MINUTES` controls how long a slot is held without payment. Default: `30`.
+
+```env
+RESERVATION_TTL_MINUTES=30
+```
+
+This value is used for:
+- the temporary hold in `pending_payments` (`reservation_expires_at`);
+- the WayForPay invoice timeout (`orderTimeout`).
+
+After the TTL expires, the slot becomes available again automatically.
+
 **Как получить токен:**
 
 1. Откройте Telegram и найдите бота @BotFather

@@ -36,7 +36,7 @@ APP_PORT = int(os.getenv("APP_PORT", "8080").strip())
 PAYMENT_PROVIDER = "wayforpay"
 
 DEPOSIT_AMOUNT_UAH = 200
-INVOICE_VALIDITY_SECONDS = 30 * 60
+RESERVATION_TTL_MINUTES = int(os.getenv("RESERVATION_TTL_MINUTES", "30"))
 WAYFORPAY_API_URL = "https://api.wayforpay.com/api"
 WAYFORPAY_DEBUG = os.getenv("WAYFORPAY_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -368,7 +368,7 @@ async def create_wayforpay_invoice(
         "orderDate": order_date,
         "amount": amount,
         "currency": currency,
-        "orderTimeout": INVOICE_VALIDITY_SECONDS,
+        "orderTimeout": RESERVATION_TTL_MINUTES * 60,
         "productName": product_names,
         "productPrice": product_prices,
         "productCount": product_counts,
@@ -942,7 +942,7 @@ async def process_time(callback: types.CallbackQuery, state: FSMContext):
 
     date_obj = datetime.strptime(booking_date, "%Y-%m-%d")
     date_display = date_obj.strftime("%d.%m.%Y")
-    reservation_expires_at = (datetime.now(timezone.utc) + timedelta(seconds=INVOICE_VALIDITY_SECONDS)).strftime(
+    reservation_expires_at = (datetime.now(timezone.utc) + timedelta(minutes=RESERVATION_TTL_MINUTES)).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
     request_id = BookingDatabase.reserve_pending_booking(
