@@ -60,6 +60,8 @@ class BookingDatabase:
                 },
             )
 
+            BookingDatabase._migrate_bookings_to_per_master_unique(cursor)
+
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS pending_payments (
@@ -110,6 +112,8 @@ class BookingDatabase:
                 """
             )
 
+            BookingDatabase._migrate_pending_active_slot_index(cursor)
+
             cursor.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_pending_invoice
@@ -153,6 +157,89 @@ class BookingDatabase:
                 ON masters (is_active)
                 """
             )
+
+    @staticmethod
+    def _migrate_bookings_to_per_master_unique(cursor: sqlite3.Cursor):
+        cursor.execute(
+            """
+            SELECT sql FROM sqlite_master
+            WHERE type = 'table' AND name = 'bookings'
+            """
+        )
+        row = cursor.fetchone()
+        if not row:
+            return
+        create_sql = row["sql"] or ""
+        if "UNIQUE(master_telegram_id, booking_date, booking_time)" in create_sql:
+            return
+
+        logger = __import__("logging").getLogger(__name__)
+        logger.info("Migrating bookings table to per-master unique constraint")
+
+        cursor.execute("ALTER TABLE bookings RENAME TO bookings_old")
+        cursor.execute(
+            """
+            CREATE TABLE bookings_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                master_telegram_id INTEGER DEFAULT 0,
+                full_name TEXT NOT NULL,
+                phone_number TEXT NOT NULL,
+                service TEXT NOT NULL,
+                booking_date TEXT NOT NULL,
+                booking_time TEXT NOT NULL,
+                payment_invoice_id TEXT,
+                payment_provider TEXT DEFAULT 'wayforpay',
+                payment_amount INTEGER DEFAULT 200,
+                payment_confirmed_at TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(master_telegram_id, booking_date, booking_time)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            INSERT INTO bookings_new (
+                id, user_id, master_telegram_id, full_name, phone_number, service,
+                booking_date, booking_time, payment_invoice_id, payment_provider,
+                payment_amount, payment_confirmed_at, created_at
+            )
+            SELECT
+                id, user_id, COALESCE(master_telegram_id, 0), full_name, phone_number, service,
+                booking_date, booking_time, payment_invoice_id, payment_provider,
+                payment_amount, payment_confirmed_at, created_at
+            FROM bookings_old
+            """
+        )
+        cursor.execute("DROP TABLE bookings_old")
+        cursor.execute("ALTER TABLE bookings_new RENAME TO bookings")
+
+    @staticmethod
+    def _migrate_pending_active_slot_index(cursor: sqlite3.Cursor):
+        cursor.execute(
+            """
+            SELECT sql FROM sqlite_master
+            WHERE type = 'index' AND name = 'idx_pending_active_slot'
+            """
+        )
+        row = cursor.fetchone()
+        if not row:
+            return
+        index_sql = row["sql"] or ""
+        if "master_telegram_id" in index_sql:
+            return
+
+        logger = __import__("logging").getLogger(__name__)
+        logger.info("Migrating idx_pending_active_slot to per-master unique index")
+
+        cursor.execute("DROP INDEX idx_pending_active_slot")
+        cursor.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_active_slot
+            ON pending_payments (master_telegram_id, booking_date, booking_time)
+            WHERE status IN ('creating', 'pending_payment', 'processing')
+            """
+        )
 
     @staticmethod
     def _ensure_columns(cursor: sqlite3.Cursor, table_name: str, columns: dict[str, str]):
@@ -460,7 +547,7 @@ class BookingDatabase:
 
         booking_payload = (
             pending["user_id"],
-            pending.get("master_telegram_id"),
+            pending.get("master_telegram_id") or 0,
             pending["full_name"],
             pending["phone_number"],
             pending["service"],
@@ -551,7 +638,7 @@ class BookingDatabase:
         payment_provider: str = "wayforpay",
         payment_amount: int = 200,
         payment_confirmed_at: Optional[str] = None,
-        master_telegram_id: Optional[int] = None,
+        master_telegram_id: int = 0,
     ) -> bool:
         """Backward-compatible helper for directly inserting a confirmed booking."""
         if not payment_confirmed_at:
