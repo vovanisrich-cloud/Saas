@@ -329,6 +329,8 @@ https://<RAILWAY_PUBLIC_DOMAIN>/payments/wayforpay/<PAYMENT_WEBHOOK_SECRET>
    DATABASE_FILE=/app/data/bookings.db
    ```
 
+Папка для базы создаётся автоматически при запуске.
+
 После этого файл БД будет сохраняться между перезапусками.
 
 ### 4. Проверка

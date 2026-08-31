@@ -18,6 +18,9 @@ class BookingDatabase:
 
     @staticmethod
     def _connect() -> sqlite3.Connection:
+        database_path = Path(DATABASE_FILE)
+        if database_path.parent and not database_path.parent.exists():
+            database_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(DATABASE_FILE)
         conn.row_factory = sqlite3.Row
         return conn
