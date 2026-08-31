@@ -245,6 +245,7 @@ def build_wayforpay_signature(
     product_counts: list[str],
     product_prices: list[str],
 ) -> str:
+    product_parts = [val for pair in zip(product_names, product_counts, product_prices) for val in pair]
     base_string = ";".join(
         [
             merchant_account,
@@ -253,9 +254,7 @@ def build_wayforpay_signature(
             str(order_date),
             amount,
             currency,
-            *product_names,
-            *product_counts,
-            *product_prices,
+            *product_parts,
         ]
     )
     return hmac.new(WAYFORPAY_SECRET_KEY.encode("utf-8"), base_string.encode("utf-8"), hashlib.md5).hexdigest()
