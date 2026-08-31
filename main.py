@@ -90,14 +90,6 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=storage)
 
 
-def get_start_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📅 Записатися на послугу")]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-
-
 def get_phone_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="📱 Надіслати номер телефону", request_contact=True)]],
@@ -106,20 +98,11 @@ def get_phone_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def get_services_keyboard(services: list[str] | None = None, prefix: str = "service") -> InlineKeyboardMarkup:
-    if services:
-        keyboard = []
-        for index, service_name in enumerate(services):
-            keyboard.append([InlineKeyboardButton(text=service_name, callback_data=f"{prefix}:{index}")])
-        return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💅 Манікюр", callback_data="service_manicure")],
-            [InlineKeyboardButton(text="🦶 Педикюр", callback_data="service_pedicure")],
-            [InlineKeyboardButton(text="✨ Комплекс", callback_data="service_complex")],
-        ]
-    )
+def get_services_keyboard(services: list[str], prefix: str = "service") -> InlineKeyboardMarkup:
+    keyboard = []
+    for index, service_name in enumerate(services):
+        keyboard.append([InlineKeyboardButton(text=service_name, callback_data=f"{prefix}:{index}")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 def format_master_schedule(schedule: list[str] | None) -> str:
@@ -302,7 +285,7 @@ def verify_wayforpay_signature(payload: dict) -> bool:
 
 async def send_start_menu(message: types.Message, text: str):
     await safe_edit_text(message, text)
-    await message.answer("Готова записатися на послугу?", reply_markup=get_start_keyboard())
+    await message.answer("Спробуй ще раз 🌸", reply_markup=get_role_selection_keyboard())
 
 
 async def create_wayforpay_invoice(
@@ -629,8 +612,13 @@ async def start_master_registration(callback: types.CallbackQuery, state: FSMCon
 
 @dp.callback_query(F.data == "role_client")
 async def start_client_booking(callback: types.CallbackQuery, state: FSMContext):
-    await safe_edit_text(callback.message, "🌸 Чудово! Почнемо запис.\n\nНапиши своє ім'я та прізвище 👤")
-    await state.set_state(BeautyBookingStates.waiting_for_name)
+    await safe_edit_text(
+        callback.message,
+        "Щоб записатися, скористайся персональним посиланням свого майстра — попроси його надіслати тобі посилання виду "
+        "t.me/<bot_username>?start=master_...\n"
+        "Якщо в тебе його ще немає, звернись до майстра.",
+    )
+    await state.clear()
     await callback.answer()
 
 
@@ -806,44 +794,23 @@ async def view_master_profile(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@dp.message(F.text == "📅 Записатися на послугу")
-async def start_booking(message: types.Message, state: FSMContext):
-    await message.answer(
-        "Спочатку напиши своє ім'я та прізвище 👤",
-        reply_markup=types.ReplyKeyboardRemove(),
-    )
-    await state.set_state(BeautyBookingStates.waiting_for_name)
-
-
 @dp.message(BeautyBookingStates.waiting_for_name)
 async def process_name(message: types.Message, state: FSMContext):
-    user_data = await state.get_data()
-    master_mode = user_data.get("entry_mode") == "master"
     full_name = (message.text or "").strip()
     if not full_name:
         await message.answer("Напишіть, будь ласка, ім'я та прізвище текстом.")
         return
 
     await state.update_data(full_name=full_name)
-    if master_mode:
-        await message.answer("Тепер поділись номером телефону 📱", reply_markup=get_phone_keyboard())
-        await state.set_state(BeautyBookingStates.waiting_for_phone)
-        return
     await message.answer("Тепер поділись номером телефону 📱", reply_markup=get_phone_keyboard())
     await state.set_state(BeautyBookingStates.waiting_for_phone)
 
 
 @dp.message(BeautyBookingStates.waiting_for_phone, F.contact)
 async def process_phone(message: types.Message, state: FSMContext):
-    user_data = await state.get_data()
-    master_mode = user_data.get("entry_mode") == "master"
     await state.update_data(phone_number=message.contact.phone_number)
-    if master_mode:
-        await message.answer("Оберіть дату запису 📅", reply_markup=get_date_calendar_keyboard())
-        await state.set_state(BeautyBookingStates.waiting_for_date)
-        return
-    await message.answer("Оберіть послугу ✨", reply_markup=get_services_keyboard())
-    await state.set_state(BeautyBookingStates.waiting_for_service)
+    await message.answer("Оберіть дату запису 📅", reply_markup=get_date_calendar_keyboard())
+    await state.set_state(BeautyBookingStates.waiting_for_date)
 
 
 @dp.message(BeautyBookingStates.waiting_for_phone)
@@ -854,16 +821,10 @@ async def process_phone_fallback(message: types.Message):
 @dp.callback_query(BeautyBookingStates.waiting_for_service)
 async def process_service(callback: types.CallbackQuery, state: FSMContext):
     user_data = await state.get_data()
-    master_mode = user_data.get("entry_mode") == "master"
-    services = {
-        "service_manicure": "Манікюр",
-        "service_pedicure": "Педикюр",
-        "service_complex": "Комплекс",
-    }
-    service_name = services.get(callback.data)
+    profile = user_data.get("master_profile") or {}
+    master_services = profile.get("services") or []
+    service_name = None
     if callback.data and callback.data.startswith("master_service:"):
-        profile = user_data.get("master_profile") or {}
-        master_services = profile.get("services") or []
         try:
             service_index = int(callback.data.split(":", 1)[1])
             service_name = master_services[service_index]
@@ -874,19 +835,14 @@ async def process_service(callback: types.CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(service=service_name)
-    if master_mode:
-        await safe_edit_text(
-            callback.message,
-            f"Послуга обрана: <b>{service_name}</b>\n\nТепер напишіть своє ім'я.",
-            reply_markup=None,
-            parse_mode="HTML",
-        )
-        await callback.answer()
-        await state.set_state(BeautyBookingStates.waiting_for_name)
-        return
-    await safe_edit_text(callback.message, "Чудово. Тепер виберіть дату запису 📅", reply_markup=get_date_calendar_keyboard())
+    await safe_edit_text(
+        callback.message,
+        f"Послуга обрана: <b>{service_name}</b>\n\nТепер напишіть своє ім'я.",
+        reply_markup=None,
+        parse_mode="HTML",
+    )
     await callback.answer()
-    await state.set_state(BeautyBookingStates.waiting_for_date)
+    await state.set_state(BeautyBookingStates.waiting_for_name)
 
 
 @dp.callback_query(BeautyBookingStates.waiting_for_date, F.data.startswith("date_"))
@@ -984,7 +940,7 @@ async def process_time(callback: types.CallbackQuery, state: FSMContext):
             "Не вдалося створити платіжну сторінку. Спробуйте ще раз трохи пізніше.",
             reply_markup=None,
         )
-        await callback.message.answer("Готова записатися на послугу?", reply_markup=get_start_keyboard())
+        await callback.message.answer("Спробуй ще раз 🌸", reply_markup=get_role_selection_keyboard())
         await callback.answer()
         return
 
@@ -998,7 +954,7 @@ async def process_time(callback: types.CallbackQuery, state: FSMContext):
             "Платіжну сторінку не вдалося отримати. Спробуйте ще раз.",
             reply_markup=None,
         )
-        await callback.message.answer("Готова записатися на послугу?", reply_markup=get_start_keyboard())
+        await callback.message.answer("Спробуй ще раз 🌸", reply_markup=get_role_selection_keyboard())
         await callback.answer()
         return
 
@@ -1016,7 +972,7 @@ async def process_time(callback: types.CallbackQuery, state: FSMContext):
             "Не вдалося зберегти платіжний запит. Спробуйте ще раз.",
             reply_markup=None,
         )
-        await callback.message.answer("Готова записатися на послугу?", reply_markup=get_start_keyboard())
+        await callback.message.answer("Спробуй ще раз 🌸", reply_markup=get_role_selection_keyboard())
         await callback.answer()
         return
 
@@ -1059,7 +1015,7 @@ async def check_payment(callback: types.CallbackQuery):
             "Оплату отримано, але слот уже зайнятий іншим записом.\n\nНапишіть адміністратору, щоб вирішити це вручну.",
             reply_markup=None,
         )
-        await callback.message.answer("Готова записатися на послугу?", reply_markup=get_start_keyboard())
+        await callback.message.answer("Спробуй ще раз 🌸", reply_markup=get_role_selection_keyboard())
         await callback.answer("Потрібна ручна перевірка", show_alert=True)
         return
 
@@ -1069,7 +1025,7 @@ async def check_payment(callback: types.CallbackQuery):
             "Оплата не пройшла або строк рахунку закінчився.\n\nСпробуйте записатися ще раз.",
             reply_markup=None,
         )
-        await callback.message.answer("Готова записатися на послугу?", reply_markup=get_start_keyboard())
+        await callback.message.answer("Спробуй ще раз 🌸", reply_markup=get_role_selection_keyboard())
         await callback.answer("Платіж неуспішний", show_alert=True)
         return
 
@@ -1081,7 +1037,7 @@ async def check_payment(callback: types.CallbackQuery):
 
 @dp.message(F.contact)
 async def wrong_contact_state(message: types.Message):
-    await message.answer("Контакт потрібно надсилати під час кроку з номером телефону.", reply_markup=get_start_keyboard())
+    await message.answer("Контакт потрібно надсилати під час кроку з номером телефону.", reply_markup=get_role_selection_keyboard())
 
 
 async def wayforpay_service_url(request: web.Request):
