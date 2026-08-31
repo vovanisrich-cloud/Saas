@@ -139,6 +139,14 @@ class BookingDatabase:
                 """
             )
 
+            BookingDatabase._ensure_columns(
+                cursor,
+                "masters",
+                {
+                    "duration_minutes": "INTEGER DEFAULT 60",
+                },
+            )
+
             cursor.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_masters_active
@@ -617,6 +625,7 @@ class BookingDatabase:
         schedule: list[str],
         greeting_text: Optional[str] = None,
         is_active: bool = True,
+        duration_minutes: int = 60,
     ) -> bool:
         payload = (
             master_telegram_id,
@@ -625,6 +634,7 @@ class BookingDatabase:
             json.dumps(schedule, ensure_ascii=False),
             greeting_text,
             1 if is_active else 0,
+            duration_minutes,
             _utc_now_str(),
             _utc_now_str(),
         )
@@ -635,15 +645,16 @@ class BookingDatabase:
                 """
                 INSERT INTO masters (
                     telegram_id, master_name, services_json, schedule_json,
-                    greeting_text, is_active, created_at, updated_at
+                    greeting_text, is_active, duration_minutes, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(telegram_id) DO UPDATE SET
                     master_name = excluded.master_name,
                     services_json = excluded.services_json,
                     schedule_json = excluded.schedule_json,
                     greeting_text = excluded.greeting_text,
                     is_active = excluded.is_active,
+                    duration_minutes = excluded.duration_minutes,
                     updated_at = excluded.updated_at
                 """,
                 payload,

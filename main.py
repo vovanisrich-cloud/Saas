@@ -63,6 +63,14 @@ class BeautyBookingStates(StatesGroup):
     waiting_for_time = State()
 
 
+class MasterOnboardingStates(StatesGroup):
+    waiting_for_master_name = State()
+    waiting_for_service_input = State()
+    waiting_for_duration = State()
+    waiting_for_schedule = State()
+    confirmation = State()
+
+
 async def safe_edit_text(message: types.Message, text: str, **kwargs):
     """Edit message only if text or reply markup actually changed."""
     reply_markup = kwargs.get("reply_markup")
@@ -158,6 +166,38 @@ def get_time_keyboard(booking_date: str, master_telegram_id: int | None = None):
         keyboard_buttons.append([InlineKeyboardButton(text=f"🕒 {time_slot}", callback_data=f"time_{time_slot}")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
+
+def get_role_selection_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Я майстер, хочу зареєструватися", callback_data="role_master")],
+            [InlineKeyboardButton(text="Я клієнт, хочу записатися", callback_data="role_client")],
+        ]
+    )
+
+
+def get_master_done_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Готово", callback_data="master_services_done")]]
+    )
+
+
+def get_master_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Отримати моє посилання", callback_data="master_get_link")],
+            [InlineKeyboardButton(text="Мій профіль", callback_data="master_view_profile")],
+        ]
+    )
+
+
+def get_master_confirmation_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Зберегти", callback_data="master_save")],
+            [InlineKeyboardButton(text="Скасувати", callback_data="master_cancel")],
+        ]
+    )
 
 def get_payment_keyboard(page_url: str, order_reference: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -504,11 +544,206 @@ async def cmd_start(message: types.Message, state: FSMContext):
         )
         await state.set_state(BeautyBookingStates.waiting_for_service)
         return
+
+    profile = BookingDatabase.get_master_profile(message.from_user.id)
+    if profile:
+        await state.clear()
+        await state.update_data(
+            entry_mode="master",
+            master_telegram_id=message.from_user.id,
+            master_profile=profile,
+        )
+        await message.answer(
+            "🌸 Вітаю, майстре! Ось ваше меню:",
+            reply_markup=get_master_menu_keyboard(),
+        )
+        return
+
     await message.answer(
-        "🌸 Привіт! Я допоможу записатися на послугу.\n\nПочнемо?",
-        reply_markup=get_start_keyboard(),
+        "🌸 Привіт! Ласкаво просимо!\n\nХто ви?",
+        reply_markup=get_role_selection_keyboard(),
     )
     await state.clear()
+
+
+@dp.callback_query(F.data == "role_master")
+async def start_master_registration(callback: types.CallbackQuery, state: FSMContext):
+    await safe_edit_text(callback.message, "Добре! Давай зареєструємо твій профіль майстра.\n\nНапиши, будь ласка, своє ім'я 👤")
+    await state.set_state(MasterOnboardingStates.waiting_for_master_name)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "role_client")
+async def start_client_booking(callback: types.CallbackQuery, state: FSMContext):
+    await safe_edit_text(callback.message, "🌸 Чудово! Почнемо запис.\n\nНапиши своє ім'я та прізвище 👤")
+    await state.set_state(BeautyBookingStates.waiting_for_name)
+    await callback.answer()
+
+
+@dp.message(MasterOnboardingStates.waiting_for_master_name)
+async def process_master_name(message: types.Message, state: FSMContext):
+    master_name = (message.text or "").strip()
+    if not master_name:
+        await message.answer("Напишіть, будь ласка, ім'я текстом.")
+        return
+    await state.update_data(master_name=master_name, master_services=[])
+    await message.answer(
+        "Додай послуги, які ти надаєш.\n\nФормат: <b>Назва — ціна</b>\nНаприклад: <b>Манікюр — 300 грн</b>\n\nМожеш надсилати по одній послузі за раз.",
+        reply_markup=get_master_done_keyboard(),
+        parse_mode="HTML",
+    )
+    await state.set_state(MasterOnboardingStates.waiting_for_service_input)
+
+
+@dp.message(MasterOnboardingStates.waiting_for_service_input)
+async def process_master_service_input(message: types.Message, state: FSMContext):
+    if message.text and message.text.strip().lower() in {"готово", "done", "закінчити", "завершити"}:
+        data = await state.get_data()
+        services = data.get("master_services", [])
+        if not services:
+            await message.answer("Додай хоча б одну послугу перед завершенням.")
+            return
+        await message.answer(
+            "Скільки триває одна процедура (в хвилинах)? Наприклад: <b>60</b>",
+            reply_markup=types.ReplyKeyboardRemove(),
+            parse_mode="HTML",
+        )
+        await state.set_state(MasterOnboardingStates.waiting_for_duration)
+        return
+
+    service = (message.text or "").strip()
+    if not service:
+        await message.answer("Надішліть назву послуги текстом.")
+        return
+
+    data = await state.get_data()
+    services = list(data.get("master_services", []))
+    services.append(service)
+    await state.update_data(master_services=services)
+    await message.answer(f"Додано: {service}\nНадсилай наступну або натисни Готово ✅")
+
+
+@dp.message(MasterOnboardingStates.waiting_for_duration)
+async def process_master_duration(message: types.Message, state: FSMContext):
+    duration_text = (message.text or "").strip()
+    if not duration_text.isdigit():
+        await message.answer("Вкажи, будь ласка, тривалість числом у хвилинах. Наприклад: <b>60</b>", parse_mode="HTML")
+        return
+    duration_minutes = int(duration_text)
+    if duration_minutes <= 0:
+        await message.answer("Тривалість має бути більше 0.")
+        return
+    await state.update_data(duration_minutes=duration_minutes)
+    await message.answer(
+        "Напиши свій графік роботи текстом.\n\nНаприклад: <b>Пн–Пт: 10:00–18:00, Сб: 10:00–14:00</b>",
+        parse_mode="HTML",
+    )
+    await state.set_state(MasterOnboardingStates.waiting_for_schedule)
+
+
+@dp.message(MasterOnboardingStates.waiting_for_schedule)
+async def process_master_schedule(message: types.Message, state: FSMContext):
+    schedule_text = (message.text or "").strip()
+    if not schedule_text:
+        await message.answer("Напиши, будь ласка, графік роботи текстом.")
+        return
+    schedule_lines = [line.strip() for line in schedule_text.splitlines() if line.strip()]
+    if not schedule_lines:
+        schedule_lines = [schedule_text]
+    await state.update_data(schedule=schedule_lines)
+    data = await state.get_data()
+    preview = (
+        f"<b>Перевір профіль майстра:</b>\n\n"
+        f"👤 Ім'я: <b>{data.get('master_name', '')}</b>\n"
+        f"💅 Послуги:\n"
+        + "\n".join(f"• {s}" for s in data.get("master_services", []))
+        + f"\n\n⏱ Тривалість: <b>{data.get('duration_minutes', 60)} хв</b>\n"
+        f"📅 Графік:\n"
+        + "\n".join(f"• {s}" for s in data.get("schedule", []))
+    )
+    await message.answer(preview, reply_markup=get_master_confirmation_keyboard(), parse_mode="HTML")
+    await state.set_state(MasterOnboardingStates.confirmation)
+
+
+@dp.callback_query(MasterOnboardingStates.confirmation, F.data == "master_save")
+async def save_master_profile(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    master_name = data.get("master_name", "")
+    services = data.get("master_services", [])
+    schedule = data.get("schedule", [])
+    duration_minutes = int(data.get("duration_minutes") or 60)
+    master_telegram_id = callback.from_user.id
+
+    saved = BookingDatabase.upsert_master_profile(
+        master_telegram_id=master_telegram_id,
+        master_name=master_name,
+        services=services,
+        schedule=schedule,
+        greeting_text=None,
+        duration_minutes=duration_minutes,
+    )
+    if not saved:
+        await safe_edit_text(callback.message, "Не вдалося зберегти профіль. Спробуйте ще раз.", reply_markup=None)
+        await callback.answer()
+        await state.clear()
+        return
+
+    await safe_edit_text(callback.message, "✅ Профіль майстра збережено!", reply_markup=get_master_menu_keyboard())
+    await callback.answer("Збережено")
+    await state.clear()
+
+
+@dp.callback_query(MasterOnboardingStates.confirmation, F.data == "master_cancel")
+async def cancel_master_registration(callback: types.CallbackQuery, state: FSMContext):
+    await safe_edit_text(callback.message, "Реєстрацію скасовано. Почнемо заново?", reply_markup=get_role_selection_keyboard())
+    await callback.answer()
+    await state.clear()
+
+
+@dp.callback_query(F.data == "master_get_link")
+async def send_master_link(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    profile = data.get("master_profile")
+    if not profile:
+        profile = BookingDatabase.get_master_profile(callback.from_user.id)
+    if not profile:
+        await callback.answer("Профіль не знайдено. Спочатку зареєструйтеся.", show_alert=True)
+        return
+
+    me = await bot.get_me()
+    username = me.username or str(me.id)
+    link = f"https://t.me/{username}?start=master_{callback.from_user.id}"
+    await safe_edit_text(
+        callback.message,
+        f"Ось твоє посилання для клієнтів:\n\n{link}\n\nНадішли його клієнтам — вони потраплять безпосередньо до твого запису.",
+        reply_markup=get_master_menu_keyboard(),
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "master_view_profile")
+async def view_master_profile(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    profile = data.get("master_profile")
+    if not profile:
+        profile = BookingDatabase.get_master_profile(callback.from_user.id)
+    if not profile:
+        await callback.answer("Профіль не знайдено.", show_alert=True)
+        return
+
+    services = profile.get("services") or []
+    schedule = profile.get("schedule") or []
+    duration_minutes = profile.get("duration_minutes") or 60
+    text = (
+        f"👤 <b>{profile.get('master_name', 'Майстер')}</b>\n"
+        f"⏱ Тривалість: <b>{duration_minutes} хв</b>\n\n"
+        f"💅 Послуги:\n"
+        + "\n".join(f"• {s}" for s in services)
+        + f"\n\n📅 Графік:\n"
+        + "\n".join(f"• {s}" for s in schedule)
+    )
+    await safe_edit_text(callback.message, text, reply_markup=get_master_menu_keyboard(), parse_mode="HTML")
+    await callback.answer()
 
 
 @dp.message(F.text == "📅 Записатися на послугу")
