@@ -394,13 +394,14 @@ class BookingDatabase:
         provider: str = "wayforpay",
         request_id: Optional[str] = None,
         expires_at: Optional[str] = None,
-        master_telegram_id: Optional[int] = None,
+        master_telegram_id: int = 0,
     ) -> Optional[str]:
         """Create a temporary hold for a slot before the payment is created."""
         if not request_id:
             request_id = f"wp_{uuid4().hex[:24]}"
         if not expires_at:
             expires_at = _utc_now_str()
+        master_telegram_id = master_telegram_id or 0
 
         try:
             with BookingDatabase._connect() as conn:

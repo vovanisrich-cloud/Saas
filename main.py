@@ -948,7 +948,7 @@ async def process_time(callback: types.CallbackQuery, state: FSMContext):
     request_id = BookingDatabase.reserve_pending_booking(
         user_id=callback.from_user.id,
         full_name=user_data["full_name"],
-        master_telegram_id=master_telegram_id,
+        master_telegram_id=master_telegram_id or 0,
         phone_number=user_data["phone_number"],
         service=user_data["service"],
         booking_date=booking_date,
