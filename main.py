@@ -318,8 +318,22 @@ async def create_wayforpay_invoice(
         product_prices,
     )
     if WAYFORPAY_DEBUG:
+        signature_base = ";".join(
+            [
+                WAYFORPAY_MERCHANT_ACCOUNT,
+                WAYFORPAY_DOMAIN_NAME,
+                request_id,
+                str(order_date),
+                amount,
+                currency,
+                *product_names,
+                *product_counts,
+                *product_prices,
+            ]
+        )
         logger.debug(
-            "WayForPay CREATE_INVOICE debug: signature=%s payload_fields=%s",
+            "WayForPay CREATE_INVOICE debug: signature_base=%s merchant_signature=%s payload_fields=%s",
+            signature_base,
             merchant_signature,
             {
                 "merchantAccount": WAYFORPAY_MERCHANT_ACCOUNT,
