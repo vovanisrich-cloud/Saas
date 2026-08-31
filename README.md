@@ -288,6 +288,57 @@ copy bookings.db bookings_backup.db
 copy bookings_backup.db bookings.db
 ```
 
+## 🚆 Деплой на Railway
+
+### 1. Подготовьте репозиторий
+
+Убедитесь, что в проекте есть:
+- `Procfile` с содержимым:
+  ```
+  worker: python main.py
+  ```
+- `requirements.txt` с зависимостями.
+
+### 2. Создайте проект на Railway
+
+1. Подключите репозиторий к Railway.
+2. Добавьте переменные окружения в разделе **Variables**:
+   - `TELEGRAM_BOT_TOKEN`
+   - `WAYFORPAY_MERCHANT_ACCOUNT`
+   - `WAYFORPAY_SECRET_KEY`
+   - `WAYFORPAY_DOMAIN_NAME` — домен вашего проекта на Railway, например `your-project.up.railway.app`
+   - `PAYMENT_WEBHOOK_SECRET` — произвольный секрет для вебхука
+   - `RESERVATION_TTL_MINUTES=30` (опционально)
+
+Railway автоматически предоставит системную переменную `RAILWAY_PUBLIC_DOMAIN`. Бот автоматически построит `WAYFORPAY_SERVICE_URL` как:
+
+```
+https://<RAILWAY_PUBLIC_DOMAIN>/payments/wayforpay/<PAYMENT_WEBHOOK_SECRET>
+```
+
+Если нужно указать `WAYFORPAY_SERVICE_URL` вручную — просто задайте его явно в переменных окружения, авто-детект не сработает.
+
+### 3. Сохранение базы данных
+
+По умолчанию база хранится в файле `bookings.db`. В Railway файловая система контейнера временная, поэтому нужно подключить **Volume**:
+
+1. В разделе **Volumes** создайте volume, например `data`.
+2. Настройте его путь на `/app/data`.
+3. Укажите переменную окружения:
+   ```
+   DATABASE_FILE=/app/data/bookings.db
+   ```
+
+После этого файл БД будет сохраняться между перезапусками.
+
+### 4. Проверка
+
+После деплоя проверьте логи Railway: вы должны увидеть сообщения:
+- `WayForPay webhook server started on http://0.0.0.0:8080/payments/wayforpay/<secret>`
+- `WayForPay serviceUrl configured: https://<your-domain>/payments/wayforpay/<secret>`
+
+Также проверьте в WayForPay, что `serviceUrl` указывает на ваш Railway-домен.
+
 ## 📞 Поддержка
 
 Если у вас есть вопросы, добавьте логирование для отладки:

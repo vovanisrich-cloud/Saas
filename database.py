@@ -1,10 +1,11 @@
+import os
 import sqlite3
 import json
 from datetime import datetime, timezone
 from uuid import uuid4
 from typing import List, Optional, Tuple
 
-DATABASE_FILE = "bookings.db"
+DATABASE_FILE = os.getenv("DATABASE_FILE", "bookings.db")
 ACTIVE_PAYMENT_STATUSES = ("creating", "pending_payment", "processing")
 
 

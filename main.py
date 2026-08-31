@@ -29,8 +29,12 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 WAYFORPAY_MERCHANT_ACCOUNT = os.getenv("WAYFORPAY_MERCHANT_ACCOUNT", "test_merch_n1").strip()
 WAYFORPAY_SECRET_KEY = os.getenv("WAYFORPAY_SECRET_KEY", "").strip()
 WAYFORPAY_DOMAIN_NAME = os.getenv("WAYFORPAY_DOMAIN_NAME", "localhost").strip()
-WAYFORPAY_SERVICE_URL = os.getenv("WAYFORPAY_SERVICE_URL", "").strip() or None
 PAYMENT_WEBHOOK_SECRET = os.getenv("PAYMENT_WEBHOOK_SECRET", "wayforpay-webhook-secret").strip()
+WAYFORPAY_SERVICE_URL = os.getenv("WAYFORPAY_SERVICE_URL", "").strip()
+if not WAYFORPAY_SERVICE_URL:
+    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    if railway_domain:
+        WAYFORPAY_SERVICE_URL = f"https://{railway_domain}/payments/wayforpay/{PAYMENT_WEBHOOK_SECRET}"
 APP_HOST = os.getenv("APP_HOST", "0.0.0.0").strip()
 APP_PORT = int(os.getenv("APP_PORT", "8080").strip())
 PAYMENT_PROVIDER = "wayforpay"
