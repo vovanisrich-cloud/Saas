@@ -23,7 +23,9 @@ from database import BookingDatabase
 
 
 BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env", override=True)
+env_path = BASE_DIR / ".env"
+if env_path.exists():
+    load_dotenv(env_path, override=True)
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 WAYFORPAY_MERCHANT_ACCOUNT = os.getenv("WAYFORPAY_MERCHANT_ACCOUNT", "test_merch_n1").strip()
@@ -47,10 +49,17 @@ WAYFORPAY_DEBUG = os.getenv("WAYFORPAY_DEBUG", "0").strip().lower() in {"1", "tr
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 if not TOKEN:
-    raise RuntimeError("TELEGRAM_BOT_TOKEN is not set. Add it to D:/MicroSAAS/.env")
+    raise RuntimeError(
+        "TELEGRAM_BOT_TOKEN is not set. "
+        "Add it to your environment variables or to a .env file in the project root."
+    )
 if not WAYFORPAY_SECRET_KEY:
-    raise RuntimeError("WAYFORPAY_SECRET_KEY is not set. Add it to D:/MicroSAAS/.env")
+    raise RuntimeError(
+        "WAYFORPAY_SECRET_KEY is not set. "
+        "Add it to your environment variables or to a .env file in the project root."
+    )
 if WAYFORPAY_DOMAIN_NAME.lower() == "localhost":
     logger.warning(
         "WAYFORPAY_DOMAIN_NAME is set to localhost. WayForPay usually expects the merchant domain configured in your store."
