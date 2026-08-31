@@ -106,6 +106,7 @@ class BookingDatabase:
                     "booking_id": "INTEGER",
                     "created_at": "TEXT",
                     "updated_at": "TEXT",
+                    "card_number": "TEXT",
                 },
             )
 
@@ -153,6 +154,7 @@ class BookingDatabase:
                 "masters",
                 {
                     "duration_minutes": "INTEGER DEFAULT 60",
+                    "card_number": "TEXT",
                 },
             )
 
@@ -411,14 +413,27 @@ class BookingDatabase:
         try:
             with BookingDatabase._connect() as conn:
                 cursor = conn.cursor()
+                master_card_number = None
+                if master_telegram_id:
+                    cursor.execute(
+                        """
+                        SELECT card_number
+                        FROM masters
+                        WHERE telegram_id = ?
+                        """,
+                        (master_telegram_id,),
+                    )
+                    master_row = cursor.fetchone()
+                    if master_row:
+                        master_card_number = (master_row["card_number"] or "").strip() or None
                 cursor.execute(
                     """
                     INSERT INTO pending_payments (
                         request_id, user_id, master_telegram_id, full_name, phone_number, service,
                         booking_date, booking_time, payment_provider, amount,
-                        status, expires_at, created_at, updated_at
+                        status, expires_at, created_at, updated_at, card_number
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', ?, ?, ?, ?)
                     """,
                     (
                         request_id,
@@ -434,6 +449,7 @@ class BookingDatabase:
                         expires_at,
                         _utc_now_str(),
                         _utc_now_str(),
+                        master_card_number,
                     ),
                 )
             return request_id
@@ -739,6 +755,7 @@ class BookingDatabase:
         greeting_text: Optional[str] = None,
         is_active: bool = True,
         duration_minutes: int = 60,
+        card_number: Optional[str] = None,
     ) -> bool:
         payload = (
             master_telegram_id,
@@ -748,6 +765,7 @@ class BookingDatabase:
             greeting_text,
             1 if is_active else 0,
             duration_minutes,
+            card_number,
             _utc_now_str(),
             _utc_now_str(),
         )
@@ -758,9 +776,9 @@ class BookingDatabase:
                 """
                 INSERT INTO masters (
                     telegram_id, master_name, services_json, schedule_json,
-                    greeting_text, is_active, duration_minutes, created_at, updated_at
+                    greeting_text, is_active, duration_minutes, card_number, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(telegram_id) DO UPDATE SET
                     master_name = excluded.master_name,
                     services_json = excluded.services_json,
@@ -768,6 +786,7 @@ class BookingDatabase:
                     greeting_text = excluded.greeting_text,
                     is_active = excluded.is_active,
                     duration_minutes = excluded.duration_minutes,
+                    card_number = COALESCE(excluded.card_number, masters.card_number),
                     updated_at = excluded.updated_at
                 """,
                 payload,

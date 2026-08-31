@@ -81,7 +81,14 @@ class MasterOnboardingStates(StatesGroup):
     waiting_for_service_input = State()
     waiting_for_duration = State()
     waiting_for_schedule = State()
+    waiting_for_card = State()
     confirmation = State()
+
+
+MASTER_CARD_PROMPT = (
+    "Введи номер картки (13–19 цифр), на яку клієнти будуть переказувати передоплату. "
+    "Пробіли та дефіси будуть видалені автоматично."
+)
 
 
 async def safe_edit_text(message: types.Message, text: str, **kwargs):
@@ -182,6 +189,7 @@ def get_master_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Отримати моє посилання", callback_data="master_get_link")],
+            [InlineKeyboardButton(text="💳 Змінити картку", callback_data="master_set_card")],
             [InlineKeyboardButton(text="Мій профіль", callback_data="master_view_profile")],
         ]
     )
@@ -230,6 +238,46 @@ def parse_start_payload(text: str | None) -> str | None:
     if len(parts) < 2:
         return None
     return parts[1].strip()
+
+
+def is_valid_luhn(card_number: str) -> bool:
+    if not card_number or not card_number.isdigit():
+        return False
+    total = 0
+    for index, char in enumerate(reversed(card_number)):
+        digit = int(char)
+        if index % 2 == 1:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+    return total % 10 == 0
+
+
+def normalize_card_number(raw: str | None) -> str:
+    return (raw or "").replace(" ", "").replace("-", "").strip()
+
+
+def mask_card_last4(card_number: str | None) -> str | None:
+    digits = "".join(ch for ch in (card_number or "") if ch.isdigit())
+    if len(digits) < 4:
+        return None
+    return digits[-4:]
+
+
+def build_master_confirmation_preview(data: dict) -> str:
+    card = data.get("card_number") or ""
+    last4 = card[-4:] if len(card) >= 4 else ""
+    return (
+        f"<b>Перевір профіль майстра:</b>\n\n"
+        f"👤 Ім'я: <b>{data.get('master_name', '')}</b>\n"
+        f"💅 Послуги:\n"
+        + "\n".join(f"• {s}" for s in data.get("master_services", []))
+        + f"\n\n⏱ Тривалість: <b>{data.get('duration_minutes', 60)} хв</b>\n"
+        f"📅 Графік:\n"
+        + "\n".join(f"• {s}" for s in data.get("schedule", []))
+        + f"\n\n💳 Картка: {last4} (останні 4 цифри)"
+    )
 
 
 def format_wayforpay_amount(value: int | float | Decimal | str) -> str:
@@ -300,6 +348,20 @@ async def send_start_menu(message: types.Message, text: str):
     await message.answer("Спробуй ще раз 🌸", reply_markup=get_role_selection_keyboard())
 
 
+async def _post_wayforpay_json(payload: dict, operation: str) -> dict:
+    async with ClientSession() as session:
+        async with session.post(WAYFORPAY_API_URL, json=payload) as response:
+            body_text = await response.text()
+            if WAYFORPAY_DEBUG:
+                logger.debug("WayForPay %s response: status=%s body=%s", operation, response.status, body_text)
+            if response.status != 200:
+                raise RuntimeError(f"WayForPay {operation} failed ({response.status}): {body_text}")
+            try:
+                return json.loads(body_text)
+            except Exception as exc:
+                raise RuntimeError(f"WayForPay returned invalid JSON: {body_text}") from exc
+
+
 async def create_wayforpay_invoice(
     request_id: str,
     full_name: str,
@@ -307,6 +369,7 @@ async def create_wayforpay_invoice(
     service: str,
     booking_date: str,
     booking_time: str,
+    master_card_number: str | None = None,
 ) -> dict:
     order_date = int(time.time())
     amount = format_wayforpay_amount(DEPOSIT_AMOUNT_UAH)
@@ -339,6 +402,7 @@ async def create_wayforpay_invoice(
                 *product_prices,
             ]
         )
+        last4 = mask_card_last4(master_card_number)
         logger.debug(
             "WayForPay CREATE_INVOICE debug: signature_base=%s merchant_signature=%s payload_fields=%s",
             signature_base,
@@ -354,6 +418,7 @@ async def create_wayforpay_invoice(
                 "productCount": product_counts,
                 "productPrice": product_prices,
                 "serviceUrl": WAYFORPAY_SERVICE_URL,
+                "receiverLast4": last4,
             },
         )
 
@@ -381,22 +446,86 @@ async def create_wayforpay_invoice(
     }
     if not payload["serviceUrl"]:
         payload.pop("serviceUrl")
+    if master_card_number:
+        payload["regularMode"] = "client"
+        payload["receiver"] = [
+            {
+                "type": "card",
+                "value": master_card_number,
+                "percent": 100,
+                "merchantAccount": WAYFORPAY_MERCHANT_ACCOUNT,
+            }
+        ]
 
-    async with ClientSession() as session:
-        async with session.post(WAYFORPAY_API_URL, json=payload) as response:
-            body_text = await response.text()
-            if WAYFORPAY_DEBUG:
-                logger.debug(
-                    "WayForPay CREATE_INVOICE response: status=%s body=%s",
-                    response.status,
-                    body_text,
-                )
-            if response.status != 200:
-                raise RuntimeError(f"WayForPay invoice create failed ({response.status}): {body_text}")
-            try:
-                return await response.json()
-            except Exception as exc:
-                raise RuntimeError(f"WayForPay returned invalid JSON: {body_text}") from exc
+    try:
+        result = await _post_wayforpay_json(payload, "CREATE_INVOICE")
+    except RuntimeError:
+        if not master_card_number or "receiver" not in payload:
+            raise
+        logger.warning(
+            "WayForPay CREATE_INVOICE rejected receiver routing, retrying without it for order %s",
+            request_id,
+        )
+        payload.pop("receiver", None)
+        payload.pop("regularMode", None)
+        return await _post_wayforpay_json(payload, "CREATE_INVOICE")
+
+    if master_card_number and payload.get("receiver") and not result.get("invoiceUrl"):
+        logger.warning(
+            "WayForPay CREATE_INVOICE did not return invoiceUrl with receiver routing, retrying without it for order %s",
+            request_id,
+        )
+        payload.pop("receiver", None)
+        payload.pop("regularMode", None)
+        return await _post_wayforpay_json(payload, "CREATE_INVOICE")
+    return result
+
+
+async def transfer_wayforpay_to_master_card(pending: dict) -> None:
+    card_number = (pending.get("card_number") or "").strip()
+    if not card_number:
+        return
+
+    original_reference = str(pending.get("request_id") or pending.get("payment_invoice_id") or "")
+    order_reference = f"payout_{original_reference}"
+    amount = format_wayforpay_amount(pending.get("amount") or DEPOSIT_AMOUNT_UAH)
+    currency = "UAH"
+    order_date = int(time.time())
+    signature_base = ";".join(
+        [WAYFORPAY_MERCHANT_ACCOUNT, order_reference, amount, currency, card_number]
+    )
+    merchant_signature = hmac.new(
+        WAYFORPAY_SECRET_KEY.encode("utf-8"),
+        signature_base.encode("utf-8"),
+        hashlib.md5,
+    ).hexdigest()
+    payload = {
+        "transactionType": "TRANSFER_TO_CARD",
+        "merchantAccount": WAYFORPAY_MERCHANT_ACCOUNT,
+        "merchantSignature": merchant_signature,
+        "cardNumber": card_number,
+        "amount": amount,
+        "currency": currency,
+        "orderReference": order_reference,
+        "orderDate": order_date,
+        "apiVersion": 1,
+    }
+    last4 = mask_card_last4(card_number)
+    try:
+        result = await _post_wayforpay_json(payload, "TRANSFER_TO_CARD")
+        logger.info(
+            "WayForPay TRANSFER_TO_CARD sent for %s to card •••• %s: %s",
+            original_reference,
+            last4,
+            result.get("transactionStatus") or result.get("reason") or "ok",
+        )
+    except Exception as exc:
+        logger.exception(
+            "WayForPay TRANSFER_TO_CARD failed for %s to card •••• %s: %s",
+            original_reference,
+            last4,
+            exc,
+        )
 
 
 async def fetch_wayforpay_invoice_status(order_reference: str) -> dict:
@@ -483,6 +612,9 @@ async def notify_master(master_telegram_id: int | None, booking_info: dict):
         f"🕒 <b>{booking_info['booking_time']}</b>\n"
         f"Статус оплати: <b>{booking_info.get('payment_status', 'paid')}</b>"
     )
+    last4 = mask_card_last4(booking_info.get("card_number"))
+    if last4:
+        message += f"\n💳 Передоплату буде переказано на вашу картку •••• {last4}"
 
     try:
         await bot.send_message(master_telegram_id, message, parse_mode="HTML", reply_markup=reply_markup)
@@ -542,6 +674,7 @@ async def process_payment_status(order_reference: str, source: str) -> dict:
         was_paid = pending["status"] == "paid"
         booking_id = BookingDatabase.finalize_booking_from_payment(order_reference)
         if booking_id is not None and not was_paid:
+            await transfer_wayforpay_to_master_card(pending)
             await notify_booking_confirmed(pending)
             await notify_master(
                 pending.get("master_telegram_id"),
@@ -554,6 +687,7 @@ async def process_payment_status(order_reference: str, source: str) -> dict:
                     "booking_time": pending.get("booking_time"),
                     "payment_status": "paid",
                     "booking_id": booking_id,
+                    "card_number": pending.get("card_number"),
                 },
             )
         if booking_id is not None or was_paid:
@@ -718,16 +852,51 @@ async def process_master_schedule(message: types.Message, state: FSMContext):
     if not schedule_lines:
         schedule_lines = [schedule_text]
     await state.update_data(schedule=schedule_lines)
+    await message.answer(MASTER_CARD_PROMPT)
+    await state.set_state(MasterOnboardingStates.waiting_for_card)
+
+
+@dp.message(MasterOnboardingStates.waiting_for_card)
+async def process_master_card(message: types.Message, state: FSMContext):
+    card_number = normalize_card_number(message.text)
+    if not card_number.isdigit() or not (13 <= len(card_number) <= 19):
+        await message.answer(
+            "Номер картки має містити лише 13–19 цифр. Пробіли та дефіси можна залишати — їх буде видалено. "
+            "Спробуй ввести ще раз."
+        )
+        return
+    if not is_valid_luhn(card_number):
+        await message.answer(
+            "Схоже, номер картки введено з помилкою (не проходить перевірку). Спробуй ввести ще раз."
+        )
+        return
+
+    await state.update_data(card_number=card_number)
     data = await state.get_data()
-    preview = (
-        f"<b>Перевір профіль майстра:</b>\n\n"
-        f"👤 Ім'я: <b>{data.get('master_name', '')}</b>\n"
-        f"💅 Послуги:\n"
-        + "\n".join(f"• {s}" for s in data.get("master_services", []))
-        + f"\n\n⏱ Тривалість: <b>{data.get('duration_minutes', 60)} хв</b>\n"
-        f"📅 Графік:\n"
-        + "\n".join(f"• {s}" for s in data.get("schedule", []))
-    )
+    if data.get("updating_card_only"):
+        profile = BookingDatabase.get_master_profile(message.from_user.id)
+        if not profile:
+            await message.answer("Профіль не знайдено. Спочатку зареєструйтеся.")
+            await state.clear()
+            return
+        BookingDatabase.upsert_master_profile(
+            master_telegram_id=message.from_user.id,
+            master_name=profile.get("master_name") or "",
+            services=profile.get("services") or [],
+            schedule=profile.get("schedule") or [],
+            greeting_text=profile.get("greeting_text"),
+            duration_minutes=int(profile.get("duration_minutes") or 60),
+            card_number=card_number,
+        )
+        last4 = card_number[-4:]
+        await message.answer(
+            f"Картку збережено ✅ •••• {last4}",
+            reply_markup=get_master_menu_keyboard(),
+        )
+        await state.clear()
+        return
+
+    preview = build_master_confirmation_preview(data)
     await message.answer(preview, reply_markup=get_master_confirmation_keyboard(), parse_mode="HTML")
     await state.set_state(MasterOnboardingStates.confirmation)
 
@@ -739,6 +908,7 @@ async def save_master_profile(callback: types.CallbackQuery, state: FSMContext):
     services = data.get("master_services", [])
     schedule = data.get("schedule", [])
     duration_minutes = int(data.get("duration_minutes") or 60)
+    card_number = data.get("card_number")
     master_telegram_id = callback.from_user.id
 
     saved = BookingDatabase.upsert_master_profile(
@@ -748,6 +918,7 @@ async def save_master_profile(callback: types.CallbackQuery, state: FSMContext):
         schedule=schedule,
         greeting_text=None,
         duration_minutes=duration_minutes,
+        card_number=card_number,
     )
     if not saved:
         await safe_edit_text(callback.message, "Не вдалося зберегти профіль. Спробуйте ще раз.", reply_markup=None)
@@ -765,6 +936,18 @@ async def cancel_master_registration(callback: types.CallbackQuery, state: FSMCo
     await safe_edit_text(callback.message, "Реєстрацію скасовано. Почнемо заново?", reply_markup=get_role_selection_keyboard())
     await callback.answer()
     await state.clear()
+
+
+@dp.callback_query(F.data == "master_set_card")
+async def start_master_card_update(callback: types.CallbackQuery, state: FSMContext):
+    profile = BookingDatabase.get_master_profile(callback.from_user.id)
+    if not profile:
+        await callback.answer("Профіль не знайдено. Спочатку зареєструйтеся.", show_alert=True)
+        return
+    await state.update_data(updating_card_only=True)
+    await callback.message.answer(MASTER_CARD_PROMPT)
+    await state.set_state(MasterOnboardingStates.waiting_for_card)
+    await callback.answer()
 
 
 @dp.callback_query(F.data == "master_get_link")
@@ -801,9 +984,12 @@ async def view_master_profile(callback: types.CallbackQuery, state: FSMContext):
     services = profile.get("services") or []
     schedule = profile.get("schedule") or []
     duration_minutes = profile.get("duration_minutes") or 60
+    last4 = mask_card_last4(profile.get("card_number"))
+    card_line = f"💳 Картка: {last4} (останні 4 цифри)\n\n" if last4 else "💳 Картка: не вказана\n\n"
     text = (
         f"👤 <b>{profile.get('master_name', 'Майстер')}</b>\n"
-        f"⏱ Тривалість: <b>{duration_minutes} хв</b>\n\n"
+        f"⏱ Тривалість: <b>{duration_minutes} хв</b>\n"
+        f"{card_line}"
         f"💅 Послуги:\n"
         + "\n".join(f"• {s}" for s in services)
         + f"\n\n📅 Графік:\n"
@@ -943,6 +1129,13 @@ async def process_time(callback: types.CallbackQuery, state: FSMContext):
         return
 
     try:
+        pending = BookingDatabase.get_pending_payment_by_request(request_id)
+        master_card_number = (pending.get("card_number") or "").strip() if pending else ""
+        if not master_card_number:
+            logger.warning(
+                "Master %s has no card_number, using global merchant account",
+                master_telegram_id,
+            )
         invoice = await create_wayforpay_invoice(
             request_id=request_id,
             full_name=user_data["full_name"],
@@ -950,6 +1143,7 @@ async def process_time(callback: types.CallbackQuery, state: FSMContext):
             service=user_data["service"],
             booking_date=booking_date,
             booking_time=booking_time,
+            master_card_number=master_card_number or None,
         )
     except Exception as exc:
         logger.exception("Failed to create WayForPay invoice for request %s", request_id)
