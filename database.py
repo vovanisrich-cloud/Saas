@@ -514,6 +514,59 @@ class BookingDatabase:
             return dict(row) if row else None
 
     @staticmethod
+    def get_pending_payment_for_test(user_id: Optional[int] = None, lookup: Optional[str] = None) -> Optional[dict]:
+        """Find a pending reservation by id/request_id, or the latest active unpaid hold."""
+        with BookingDatabase._connect() as conn:
+            cursor = conn.cursor()
+            if lookup:
+                raw = lookup.strip()
+                token = raw
+                if token.lower().startswith("booking_"):
+                    token = token.split("_", 1)[1]
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM pending_payments
+                    WHERE request_id = ?
+                       OR payment_invoice_id = ?
+                       OR CAST(id AS TEXT) = ?
+                       OR CAST(booking_id AS TEXT) = ?
+                    ORDER BY datetime(created_at) DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (raw, raw, token, token),
+                )
+                row = cursor.fetchone()
+                return dict(row) if row else None
+
+            placeholders = ",".join("?" for _ in ACTIVE_PAYMENT_STATUSES)
+            if user_id is not None:
+                cursor.execute(
+                    f"""
+                    SELECT *
+                    FROM pending_payments
+                    WHERE user_id = ?
+                      AND status IN ({placeholders})
+                    ORDER BY datetime(created_at) DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (user_id, *ACTIVE_PAYMENT_STATUSES),
+                )
+            else:
+                cursor.execute(
+                    f"""
+                    SELECT *
+                    FROM pending_payments
+                    WHERE status IN ({placeholders})
+                    ORDER BY datetime(created_at) DESC, id DESC
+                    LIMIT 1
+                    """,
+                    ACTIVE_PAYMENT_STATUSES,
+                )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    @staticmethod
     def mark_payment_status(invoice_id: str, status: str) -> bool:
         """Update payment status without finalizing the booking."""
         with BookingDatabase._connect() as conn:
@@ -562,11 +615,14 @@ class BookingDatabase:
         """Move a paid pending reservation into the confirmed bookings table."""
         pending = BookingDatabase.get_pending_payment_by_invoice(invoice_id)
         if not pending:
+            pending = BookingDatabase.get_pending_payment_by_request(invoice_id)
+        if not pending:
             return None
 
         if pending["status"] == "paid":
-            return None
+            return pending.get("booking_id")
 
+        invoice_key = pending.get("payment_invoice_id") or pending["request_id"]
         booking_payload = (
             pending["user_id"],
             pending.get("master_telegram_id") or 0,
@@ -575,7 +631,7 @@ class BookingDatabase:
             pending["service"],
             pending["booking_date"],
             pending["booking_time"],
-            pending["payment_invoice_id"],
+            invoice_key,
             pending["payment_provider"],
             pending["amount"],
             _utc_now_str(),
@@ -604,10 +660,12 @@ class BookingDatabase:
                     UPDATE pending_payments
                     SET status = 'paid',
                         booking_id = ?,
+                        payment_invoice_id = COALESCE(payment_invoice_id, ?),
+                        expires_at = '2099-01-01 00:00:00',
                         updated_at = ?
-                    WHERE payment_invoice_id = ?
+                    WHERE request_id = ?
                     """,
-                    (booking_id, _utc_now_str(), invoice_id),
+                    (booking_id, invoice_key, _utc_now_str(), pending["request_id"]),
                 )
 
                 conn.commit()
@@ -620,9 +678,9 @@ class BookingDatabase:
                     UPDATE pending_payments
                     SET status = 'conflict',
                         updated_at = ?
-                    WHERE payment_invoice_id = ?
+                    WHERE request_id = ?
                     """,
-                    (_utc_now_str(), invoice_id),
+                    (_utc_now_str(), pending["request_id"]),
                 )
             return None
         except sqlite3.Error:

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from aiohttp import ClientSession, web
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -45,6 +45,31 @@ DEPOSIT_AMOUNT_UAH = 200
 RESERVATION_TTL_MINUTES = int(os.getenv("RESERVATION_TTL_MINUTES", "30"))
 WAYFORPAY_API_URL = "https://api.wayforpay.com/api"
 WAYFORPAY_DEBUG = os.getenv("WAYFORPAY_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_admin_ids(raw: str) -> list[int]:
+    ids: list[int] = []
+    for part in raw.replace(";", ",").split(","):
+        part = part.strip()
+        if part.isdigit():
+            ids.append(int(part))
+    return ids
+
+
+# Скрытые админ-команды (/test_pay). Свой Telegram user id — в ADMIN_IDS в .env, через запятую.
+# Если ADMIN_IDS пустой, команду может вызвать зарегистрированный мастер (ты при онбординге).
+ADMIN_IDS = _parse_admin_ids(os.getenv("ADMIN_IDS", ""))
+
+
+def _can_use_test_pay(user_id: int) -> bool:
+    if user_id in ADMIN_IDS:
+        return True
+    # Пока ADMIN_IDS не задан — пускаем тебя как мастера и в debug-режиме.
+    if ADMIN_IDS:
+        return False
+    if WAYFORPAY_DEBUG:
+        return True
+    return BookingDatabase.get_master_profile(user_id) is not None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -656,6 +681,78 @@ async def cancel_booking_handler(callback: types.CallbackQuery, state: FSMContex
     await notify_client_about_cancellation(deleted)
 
 
+async def complete_booking_after_payment(pending: dict, *, transfer_payout: bool = True) -> int | None:
+    """Confirm a pending reservation after payment (real webhook or /test_pay)."""
+    was_paid = pending.get("status") == "paid"
+    reference = pending.get("payment_invoice_id") or pending.get("request_id")
+    booking_id = BookingDatabase.finalize_booking_from_payment(str(reference))
+    if booking_id is None:
+        return None
+    if was_paid:
+        return booking_id
+
+    if transfer_payout:
+        await transfer_wayforpay_to_master_card(pending)
+    await notify_booking_confirmed(pending)
+    await notify_master(
+        pending.get("master_telegram_id"),
+        {
+            "client_telegram_id": pending.get("user_id"),
+            "full_name": pending.get("full_name"),
+            "phone_number": pending.get("phone_number"),
+            "service": pending.get("service"),
+            "booking_date": pending.get("booking_date"),
+            "booking_time": pending.get("booking_time"),
+            "payment_status": "paid",
+            "booking_id": booking_id,
+            "card_number": pending.get("card_number"),
+        },
+    )
+    return booking_id
+
+
+# Скрытая команда эмуляции оплаты.
+# Роутеров в проекте нет: хендлеры вешаются на dp. Если вынесете команды в
+# handlers/admin.py → Router(), зарегистрируйте этот хендлер там и подключите
+# router через dp.include_router(admin_router) в main().
+@dp.message(Command("test_pay"))
+async def cmd_test_pay(message: types.Message, command: CommandObject):
+    """Эмулирует успешную оплату без WayForPay. Только ADMIN_IDS / мастер."""
+    if not _can_use_test_pay(message.from_user.id):
+        await message.answer("Команда не найдена")
+        return
+
+    lookup = (command.args or "").strip() or None
+    pending = BookingDatabase.get_pending_payment_for_test(message.from_user.id, lookup)
+    # Без аргумента: сначала твоя бронь, иначе последняя PENDING в БД (удобно тестировать чужой слот).
+    if pending is None and not lookup:
+        pending = BookingDatabase.get_pending_payment_for_test(None, None)
+    if not pending:
+        if lookup:
+            await message.answer(f"Бронь {lookup} не найдена.")
+        else:
+            await message.answer("Нет активной PENDING-брони. Сначала выбери слот и дойди до оплаты.")
+        return
+
+    if pending.get("status") == "paid":
+        await message.answer(
+            f"Бронь {pending.get('booking_id') or pending.get('id')} уже в статусе PAID."
+        )
+        return
+
+    # finalize_booking_from_payment ставит status=paid и снимает TTL (expires_at).
+    booking_id = await complete_booking_after_payment(pending, transfer_payout=False)
+    if booking_id is None:
+        await message.answer(
+            "Не удалось подтвердить бронь (слот занят или запись уже в конфликте)."
+        )
+        return
+
+    await message.answer(
+        f"✅ [TEST] Бронь {booking_id} переведена в PAID. Уведомления отправлены."
+    )
+
+
 async def process_payment_status(order_reference: str, source: str) -> dict:
     pending = BookingDatabase.get_pending_payment_by_request(order_reference)
     if not pending:
@@ -672,24 +769,7 @@ async def process_payment_status(order_reference: str, source: str) -> dict:
 
     if status == "approved":
         was_paid = pending["status"] == "paid"
-        booking_id = BookingDatabase.finalize_booking_from_payment(order_reference)
-        if booking_id is not None and not was_paid:
-            await transfer_wayforpay_to_master_card(pending)
-            await notify_booking_confirmed(pending)
-            await notify_master(
-                pending.get("master_telegram_id"),
-                {
-                    "client_telegram_id": pending.get("user_id"),
-                    "full_name": pending.get("full_name"),
-                    "phone_number": pending.get("phone_number"),
-                    "service": pending.get("service"),
-                    "booking_date": pending.get("booking_date"),
-                    "booking_time": pending.get("booking_time"),
-                    "payment_status": "paid",
-                    "booking_id": booking_id,
-                    "card_number": pending.get("card_number"),
-                },
-            )
+        booking_id = await complete_booking_after_payment(pending, transfer_payout=True)
         if booking_id is not None or was_paid:
             return {"ok": True, "status": status, "pending": pending, "payload": status_payload}
         return {"ok": False, "status": status, "reason": "booking_conflict", "pending": pending, "payload": status_payload}
