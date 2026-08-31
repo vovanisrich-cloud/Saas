@@ -199,6 +199,16 @@ def get_master_confirmation_keyboard() -> InlineKeyboardMarkup:
         ]
     )
 
+
+async def ask_master_duration(message: types.Message, state: FSMContext):
+    await message.answer(
+        "Скільки триває одна процедура (в хвилинах)? Наприклад: <b>60</b>",
+        reply_markup=types.ReplyKeyboardRemove(),
+        parse_mode="HTML",
+    )
+    await state.set_state(MasterOnboardingStates.waiting_for_duration)
+
+
 def get_payment_keyboard(page_url: str, order_reference: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -588,7 +598,7 @@ async def process_master_name(message: types.Message, state: FSMContext):
         return
     await state.update_data(master_name=master_name, master_services=[])
     await message.answer(
-        "Додай послуги, які ти надаєш.\n\nФормат: <b>Назва — ціна</b>\nНаприклад: <b>Манікюр — 300 грн</b>\n\nМожеш надсилати по одній послузі за раз.",
+        "Додай послуги, які ти надаєш.\n\nФормат: <b>Назва — ціна</b>\nНаприклад: <b>Манікюр — 300 грн</b>\n\nМожеш надсилати по одній послузі за раз.\nКоли закінчиш — натисни кнопку <b>Готово</b> або напиши <b>готово</b> текстом.",
         reply_markup=get_master_done_keyboard(),
         parse_mode="HTML",
     )
@@ -603,12 +613,7 @@ async def process_master_service_input(message: types.Message, state: FSMContext
         if not services:
             await message.answer("Додай хоча б одну послугу перед завершенням.")
             return
-        await message.answer(
-            "Скільки триває одна процедура (в хвилинах)? Наприклад: <b>60</b>",
-            reply_markup=types.ReplyKeyboardRemove(),
-            parse_mode="HTML",
-        )
-        await state.set_state(MasterOnboardingStates.waiting_for_duration)
+        await ask_master_duration(message, state)
         return
 
     service = (message.text or "").strip()
@@ -620,7 +625,18 @@ async def process_master_service_input(message: types.Message, state: FSMContext
     services = list(data.get("master_services", []))
     services.append(service)
     await state.update_data(master_services=services)
-    await message.answer(f"Додано: {service}\nНадсилай наступну або натисни Готово ✅")
+    await message.answer(f"Додано: {service}\nНадсилай наступну, натисни <b>Готово</b> або напиши <b>готово</b> ✅", parse_mode="HTML")
+
+
+@dp.callback_query(MasterOnboardingStates.waiting_for_service_input, F.data == "master_services_done")
+async def finish_master_services(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    services = data.get("master_services", [])
+    if not services:
+        await callback.answer("Додай хоча б одну послугу перед завершенням.", show_alert=True)
+        return
+    await ask_master_duration(callback.message, state)
+    await callback.answer()
 
 
 @dp.message(MasterOnboardingStates.waiting_for_duration)
