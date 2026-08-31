@@ -301,29 +301,22 @@ async def create_wayforpay_invoice(
     booking_time: str,
 ) -> dict:
     order_date = int(time.time())
-    amount = DEPOSIT_AMOUNT_UAH
+    amount = format_wayforpay_amount(DEPOSIT_AMOUNT_UAH)
     currency = "UAH"
     product_names = ["Booking deposit"]
-    product_counts = [1]
-    product_prices = [amount]
-    signature_base = ";".join(
-        [
-            WAYFORPAY_MERCHANT_ACCOUNT,
-            WAYFORPAY_DOMAIN_NAME,
-            request_id,
-            str(order_date),
-            str(amount),
-            currency,
-            *[str(item) for item in product_names],
-            *[str(item) for item in product_counts],
-            *[str(item) for item in product_prices],
-        ]
+    product_counts = ["1"]
+    product_prices = [format_wayforpay_amount(DEPOSIT_AMOUNT_UAH)]
+    merchant_signature = build_wayforpay_signature(
+        WAYFORPAY_MERCHANT_ACCOUNT,
+        WAYFORPAY_DOMAIN_NAME,
+        request_id,
+        order_date,
+        amount,
+        currency,
+        product_names,
+        product_counts,
+        product_prices,
     )
-    merchant_signature = hmac.new(
-        WAYFORPAY_SECRET_KEY.encode("utf-8"),
-        signature_base.encode("utf-8"),
-        hashlib.md5,
-    ).hexdigest()
     if WAYFORPAY_DEBUG:
         logger.debug(
             "WayForPay CREATE_INVOICE debug: base=%s payload_fields=%s",
