@@ -319,8 +319,8 @@ async def create_wayforpay_invoice(
     )
     if WAYFORPAY_DEBUG:
         logger.debug(
-            "WayForPay CREATE_INVOICE debug: base=%s payload_fields=%s",
-            signature_base,
+            "WayForPay CREATE_INVOICE debug: signature=%s payload_fields=%s",
+            merchant_signature,
             {
                 "merchantAccount": WAYFORPAY_MERCHANT_ACCOUNT,
                 "merchantDomainName": WAYFORPAY_DOMAIN_NAME,
