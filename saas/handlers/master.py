@@ -234,7 +234,7 @@ async def send_master_link(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Профіль не знайдено. Спочатку зареєструйтеся.", show_alert=True)
         return
 
-    link = f"https://t.me/bookme_beauty?start=master_{callback.from_user.id}"
+    link = f"https://t.me/bookme_beauty_bot?start=master_{callback.from_user.id}"
     await safe_edit_text(
         callback.message,
         f"Ось твоє посилання для клієнтів:\n\n{link}\n\n"
