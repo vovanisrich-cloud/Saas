@@ -234,12 +234,10 @@ async def send_master_link(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Профіль не знайдено. Спочатку зареєструйтеся.", show_alert=True)
         return
 
-    # Fallback to user_id since we don't have direct access to bot username
-    link = f"https://t.me/YourBotUsername?start=master_{callback.from_user.id}"
+    link = f"https://t.me/bookme_beauty?start=master_{callback.from_user.id}"
     await safe_edit_text(
         callback.message,
         f"Ось твоє посилання для клієнтів:\n\n{link}\n\n"
-        "Замість YourBotUsername підставте ім'я вашого бота.\n\n"
         "Надішли його клієнтам — вони потраплять безпосередньо до твого запису.",
         reply_markup=get_master_menu_keyboard(),
     )
