@@ -56,15 +56,12 @@ def _parse_admin_ids(raw: str) -> list[int]:
     return ids
 
 
-# Скрытые админ-команды (/test_pay). Свой Telegram user id — в ADMIN_IDS в .env, через запятую.
-# Если ADMIN_IDS пустой, команду может вызвать зарегистрированный мастер (ты при онбординге).
 ADMIN_IDS = _parse_admin_ids(os.getenv("ADMIN_IDS", ""))
 
 
 def _can_use_test_pay(user_id: int) -> bool:
     if user_id in ADMIN_IDS:
         return True
-    # Пока ADMIN_IDS не задан — пускаем тебя как мастера и в debug-режиме.
     if ADMIN_IDS:
         return False
     if WAYFORPAY_DEBUG:
@@ -711,20 +708,16 @@ async def complete_booking_after_payment(pending: dict, *, transfer_payout: bool
     return booking_id
 
 
-# Скрытая команда эмуляции оплаты.
-# Роутеров в проекте нет: хендлеры вешаются на dp. Если вынесете команды в
-# handlers/admin.py → Router(), зарегистрируйте этот хендлер там и подключите
-# router через dp.include_router(admin_router) в main().
+# Test payment simulation command (hidden admin feature)
 @dp.message(Command("test_pay"))
 async def cmd_test_pay(message: types.Message, command: CommandObject):
-    """Эмулирует успешную оплату без WayForPay. Только ADMIN_IDS / мастер."""
+    """Emulate successful payment without WayForPay (admin only)."""
     if not _can_use_test_pay(message.from_user.id):
         await message.answer("Команда не найдена")
         return
 
     lookup = (command.args or "").strip() or None
     pending = BookingDatabase.get_pending_payment_for_test(message.from_user.id, lookup)
-    # Без аргумента: сначала твоя бронь, иначе последняя PENDING в БД (удобно тестировать чужой слот).
     if pending is None and not lookup:
         pending = BookingDatabase.get_pending_payment_for_test(None, None)
     if not pending:
@@ -740,7 +733,6 @@ async def cmd_test_pay(message: types.Message, command: CommandObject):
         )
         return
 
-    # finalize_booking_from_payment ставит status=paid и снимает TTL (expires_at).
     booking_id = await complete_booking_after_payment(pending, transfer_payout=False)
     if booking_id is None:
         await message.answer(
