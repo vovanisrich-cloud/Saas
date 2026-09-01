@@ -2,7 +2,7 @@
 
 from aiogram import Dispatcher
 
-from . import master, booking, payment
+from . import master, booking, payment, subscription
 
 
 def register_handlers(dp: Dispatcher):
@@ -10,3 +10,4 @@ def register_handlers(dp: Dispatcher):
     dp.include_router(master.router)
     dp.include_router(booking.router)
     dp.include_router(payment.router)
+    dp.include_router(subscription.router)

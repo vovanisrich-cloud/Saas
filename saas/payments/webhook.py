@@ -12,8 +12,14 @@ async def process_payment_status(bot, order_reference: str, source: str) -> dict
     """Process payment status update from WayForPay."""
     from .wayforpay import verify_wayforpay_signature, fetch_wayforpay_invoice_status, build_wayforpay_status_signature
     from saas.notifications import notify_booking_confirmed, notify_master
+    from saas.handlers.subscription import handle_subscription_webhook
     from database import BookingDatabase
-    
+
+    if order_reference.startswith("sub_"):
+        if bot:
+            await handle_subscription_webhook(bot, order_reference)
+        return {"ok": True, "status": "approved", "reason": "subscription"}
+
     pending = BookingDatabase.get_pending_payment_by_request(order_reference)
     if not pending:
         return {"ok": False, "reason": "pending_not_found"}
@@ -81,8 +87,9 @@ async def wayforpay_service_url(request: web.Request, bot=None):
     """WayForPay webhook handler."""
     from .wayforpay import verify_wayforpay_signature, build_wayforpay_status_signature
     from saas.config import WAYFORPAY_DEBUG
+    from saas.handlers.subscription import handle_subscription_webhook
     from database import BookingDatabase
-    
+
     try:
         payload = await request.json()
     except Exception:
@@ -99,7 +106,10 @@ async def wayforpay_service_url(request: web.Request, bot=None):
     if not order_reference:
         return web.json_response({"error": "orderReference required"}, status=400)
 
-    if transaction_status == "approved" and bot:
+    if order_reference.startswith("sub_"):
+        if bot:
+            await handle_subscription_webhook(bot, order_reference)
+    elif transaction_status == "approved" and bot:
         await process_payment_status(bot, order_reference, source="webhook")
     else:
         BookingDatabase.mark_payment_status(order_reference, transaction_status or "processing")

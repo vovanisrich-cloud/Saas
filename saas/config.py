@@ -32,6 +32,9 @@ APP_PORT = int(os.getenv("APP_PORT", "8080").strip())
 # Payment Configuration
 PAYMENT_PROVIDER = "wayforpay"
 DEPOSIT_AMOUNT_UAH = 200
+TRIAL_DAYS = int(os.getenv("TRIAL_DAYS", "14"))
+SUBSCRIPTION_PRICE_UAH = int(os.getenv("SUBSCRIPTION_PRICE_UAH", "399"))
+SUBSCRIPTION_MONTHS = int(os.getenv("SUBSCRIPTION_MONTHS", "1"))
 RESERVATION_TTL_MINUTES = int(os.getenv("RESERVATION_TTL_MINUTES", "30"))
 WAYFORPAY_API_URL = "https://api.wayforpay.com/api"
 WAYFORPAY_DEBUG = os.getenv("WAYFORPAY_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on"}

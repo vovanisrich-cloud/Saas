@@ -109,6 +109,8 @@ async def create_wayforpay_invoice(
     booking_date: str,
     booking_time: str,
     master_card_number: str | None = None,
+    amount: int | None = None,
+    product_name: str | None = None,
 ) -> dict:
     """Create payment invoice via WayForPay."""
     from saas.config import (
@@ -121,18 +123,20 @@ async def create_wayforpay_invoice(
     )
     from saas.utils import mask_card_last4, split_full_name
 
+    invoice_amount = DEPOSIT_AMOUNT_UAH if amount is None else int(amount)
     order_date = int(time.time())
-    amount = format_wayforpay_amount(DEPOSIT_AMOUNT_UAH)
+    amount_value = format_wayforpay_amount(invoice_amount)
     currency = "UAH"
-    product_names = ["Booking deposit"]
+    product_label = product_name or "Booking deposit"
+    product_names = [product_label]
     product_counts = ["1"]
-    product_prices = [format_wayforpay_amount(DEPOSIT_AMOUNT_UAH)]
+    product_prices = [format_wayforpay_amount(invoice_amount)]
     merchant_signature = build_wayforpay_signature(
         WAYFORPAY_MERCHANT_ACCOUNT,
         WAYFORPAY_DOMAIN_NAME,
         request_id,
         order_date,
-        amount,
+        amount_value,
         currency,
         product_names,
         product_counts,
@@ -163,7 +167,7 @@ async def create_wayforpay_invoice(
                 "merchantDomainName": WAYFORPAY_DOMAIN_NAME,
                 "orderReference": request_id,
                 "orderDate": order_date,
-                "amount": amount,
+                "amount": amount_value,
                 "currency": currency,
                 "productName": product_names,
                 "productCount": product_counts,
@@ -184,7 +188,7 @@ async def create_wayforpay_invoice(
         "serviceUrl": WAYFORPAY_SERVICE_URL,
         "orderReference": request_id,
         "orderDate": order_date,
-        "amount": amount,
+        "amount": amount_value,
         "currency": currency,
         "orderTimeout": RESERVATION_TTL_MINUTES * 60,
         "productName": product_names,
@@ -315,74 +319,3 @@ async def fetch_wayforpay_invoice_status(order_reference: str) -> dict:
             except Exception as exc:
                 raise RuntimeError(f"WayForPay returned invalid JSON: {body_text}") from exc
 
-    original_reference = str(pending.get("request_id") or pending.get("payment_invoice_id") or "")
-    order_reference = f"payout_{original_reference}"
-    amount = format_wayforpay_amount(pending.get("amount") or DEPOSIT_AMOUNT_UAH)
-    currency = "UAH"
-    order_date = int(time.time())
-    signature_base = ";".join(
-        [WAYFORPAY_MERCHANT_ACCOUNT, order_reference, amount, currency, card_number]
-    )
-    merchant_signature = hmac.new(
-        WAYFORPAY_SECRET_KEY.encode("utf-8"),
-        signature_base.encode("utf-8"),
-        hashlib.md5,
-    ).hexdigest()
-    payload = {
-        "transactionType": "TRANSFER_TO_CARD",
-        "merchantAccount": WAYFORPAY_MERCHANT_ACCOUNT,
-        "merchantSignature": merchant_signature,
-        "cardNumber": card_number,
-        "amount": amount,
-        "currency": currency,
-        "orderReference": order_reference,
-        "orderDate": order_date,
-        "apiVersion": 1,
-    }
-    last4 = mask_card_last4(card_number)
-    try:
-        result = await _post_wayforpay_json(payload, "TRANSFER_TO_CARD")
-        logger.info(
-            "WayForPay TRANSFER_TO_CARD sent for %s to card •••• %s: %s",
-            original_reference,
-            last4,
-            result.get("transactionStatus") or result.get("reason") or "ok",
-        )
-    except Exception as exc:
-        logger.exception(
-            "WayForPay TRANSFER_TO_CARD failed for %s to card •••• %s: %s",
-            original_reference,
-            last4,
-            exc,
-        )
-
-
-async def fetch_wayforpay_invoice_status(order_reference: str) -> dict:
-    """Check payment status from WayForPay."""
-    payload = {
-        "transactionType": "CHECK_STATUS",
-        "merchantAccount": WAYFORPAY_MERCHANT_ACCOUNT,
-        "orderReference": order_reference,
-        "merchantSignature": hmac.new(
-            WAYFORPAY_SECRET_KEY.encode("utf-8"),
-            ";".join([WAYFORPAY_MERCHANT_ACCOUNT, order_reference]).encode("utf-8"),
-            hashlib.md5,
-        ).hexdigest(),
-        "apiVersion": 1,
-    }
-
-    async with ClientSession() as session:
-        async with session.post(WAYFORPAY_API_URL, json=payload) as response:
-            body_text = await response.text()
-            if WAYFORPAY_DEBUG:
-                logger.debug(
-                    "WayForPay CHECK_STATUS response: status=%s body=%s",
-                    response.status,
-                    body_text,
-                )
-            if response.status != 200:
-                raise RuntimeError(f"WayForPay status lookup failed ({response.status}): {body_text}")
-            try:
-                return await response.json()
-            except Exception as exc:
-                raise RuntimeError(f"WayForPay returned invalid JSON: {body_text}") from exc

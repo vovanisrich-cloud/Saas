@@ -155,6 +155,9 @@ class BookingDatabase:
                 {
                     "duration_minutes": "INTEGER DEFAULT 60",
                     "card_number": "TEXT",
+                    "trial_started_at": "TEXT",
+                    "subscription_active_until": "TEXT",
+                    "subscription_invoice_id": "TEXT",
                 },
             )
 
@@ -782,6 +785,194 @@ class BookingDatabase:
                 )
             row = cursor.fetchone()
             return dict(row) if row else None
+
+    @staticmethod
+    def _parse_utc_datetime(value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            if value.endswith("Z"):
+                value = value[:-1] + "+00:00"
+            dt = datetime.fromisoformat(value)
+        except ValueError:
+            try:
+                dt = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    @staticmethod
+    def _utc_datetime_to_str(value: datetime) -> str:
+        return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
+    def _add_months(value: datetime, months: int) -> datetime:
+        month_offset = (value.month - 1) + months
+        year = value.year + (month_offset // 12)
+        month = (month_offset % 12) + 1
+        day = min(value.day, 28)
+        if month == 2 and day == 29 and value.day == 29:
+            day = 29
+        return value.replace(year=year, month=month, day=day)
+
+    @staticmethod
+    def get_subscription_status(master_telegram_id: int) -> dict:
+        """
+        Return a subscription summary.
+        """
+        from saas.config import TRIAL_DAYS
+
+        with BookingDatabase._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT trial_started_at, subscription_active_until
+                FROM masters
+                WHERE telegram_id = ?
+                """,
+                (master_telegram_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return {
+                    "is_active": False,
+                    "plan": "expired",
+                    "trial_ends_at": None,
+                    "paid_until": None,
+                    "days_left": 0,
+                }
+
+            trial_started_at = row["trial_started_at"]
+            paid_until = row["subscription_active_until"]
+            now = datetime.now(timezone.utc)
+
+            paid_until_dt = BookingDatabase._parse_utc_datetime(paid_until)
+            trial_ends_at = None
+            if trial_started_at:
+                trial_started_dt = BookingDatabase._parse_utc_datetime(trial_started_at)
+                if trial_started_dt is not None:
+                    trial_ends_at = BookingDatabase._utc_datetime_to_str(trial_started_dt + __import__("datetime").timedelta(days=TRIAL_DAYS))
+            if paid_until_dt is not None and paid_until_dt > now:
+                days_left = max(0, int((paid_until_dt - now).total_seconds() // 86400))
+                return {
+                    "is_active": True,
+                    "plan": "paid",
+                    "trial_ends_at": trial_ends_at,
+                    "paid_until": paid_until,
+                    "days_left": days_left,
+                }
+
+            if trial_started_at:
+                trial_started_dt = BookingDatabase._parse_utc_datetime(trial_started_at)
+                if trial_started_dt is not None:
+                    trial_ends_at_dt = trial_started_dt + __import__("datetime").timedelta(days=TRIAL_DAYS)
+                    trial_ends_at = BookingDatabase._utc_datetime_to_str(trial_ends_at_dt)
+                    if now < trial_ends_at_dt:
+                        days_left = max(0, int((trial_ends_at_dt - now).total_seconds() // 86400))
+                        return {
+                            "is_active": True,
+                            "plan": "trial",
+                            "trial_ends_at": trial_ends_at,
+                            "paid_until": paid_until,
+                            "days_left": days_left,
+                        }
+                    return {
+                        "is_active": False,
+                        "plan": "expired",
+                        "trial_ends_at": trial_ends_at,
+                        "paid_until": paid_until,
+                        "days_left": 0,
+                    }
+
+            return {
+                "is_active": False,
+                "plan": "expired",
+                "trial_ends_at": None,
+                "paid_until": paid_until,
+                "days_left": 0,
+            }
+
+    @staticmethod
+    def start_trial_if_needed(master_telegram_id: int) -> None:
+        """Start the 14-day trial on first link generation."""
+        with BookingDatabase._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE masters
+                SET trial_started_at = COALESCE(trial_started_at, ?)
+                WHERE telegram_id = ? AND trial_started_at IS NULL
+                """,
+                (_utc_now_str(), master_telegram_id),
+            )
+
+    @staticmethod
+    def activate_subscription(master_telegram_id: int, months: int = 1) -> None:
+        """Extend active subscription for the specified number of months."""
+        from saas.config import SUBSCRIPTION_MONTHS
+
+        months = max(1, int(months or SUBSCRIPTION_MONTHS))
+        now = datetime.now(timezone.utc)
+
+        with BookingDatabase._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT subscription_active_until
+                FROM masters
+                WHERE telegram_id = ?
+                """,
+                (master_telegram_id,),
+            )
+            row = cursor.fetchone()
+            current_end = BookingDatabase._parse_utc_datetime(row["subscription_active_until"]) if row else None
+            base_dt = max(now, current_end) if current_end is not None else now
+            activation_end = BookingDatabase._add_months(base_dt, months)
+            cursor.execute(
+                """
+                UPDATE masters
+                SET subscription_active_until = ?,
+                    subscription_invoice_id = NULL
+                WHERE telegram_id = ?
+                """,
+                (BookingDatabase._utc_datetime_to_str(activation_end), master_telegram_id),
+            )
+
+    @staticmethod
+    def set_subscription_invoice(master_telegram_id: int, invoice_id: str) -> None:
+        with BookingDatabase._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE masters
+                SET subscription_invoice_id = ?
+                WHERE telegram_id = ?
+                """,
+                (invoice_id, master_telegram_id),
+            )
+
+    @staticmethod
+    def get_master_by_subscription_invoice(invoice_id: str) -> Optional[dict]:
+        with BookingDatabase._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT *
+                FROM masters
+                WHERE subscription_invoice_id = ?
+                LIMIT 1
+                """,
+                (invoice_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            profile = dict(row)
+            profile["services"] = json.loads(profile.get("services_json") or "[]")
+            profile["schedule"] = json.loads(profile.get("schedule_json") or "[]")
+            return profile
 
     @staticmethod
     def get_master_profile(master_telegram_id: int) -> Optional[dict]:
