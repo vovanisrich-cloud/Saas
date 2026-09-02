@@ -8,6 +8,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Update
 
+from saas import config as app_config
 from saas.config import TOKEN, APP_HOST, APP_PORT, PAYMENT_WEBHOOK_SECRET, logger
 from saas.handlers import register_handlers
 from saas.handlers.payment import set_bot
@@ -15,6 +16,7 @@ from saas.payments.webhook import wayforpay_service_url
 from database import BookingDatabase
 
 bot = Bot(token=TOKEN)
+app_config.BOT_USERNAME = ""
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
@@ -54,7 +56,9 @@ async def start_web_server() -> web.AppRunner:
 
 async def main():
     """Main bot function."""
-    logger.info("Bot is starting")
+    bot_info = await bot.get_me()
+    app_config.BOT_USERNAME = bot_info.username or ""
+    logger.info("Bot is starting as @%s", app_config.BOT_USERNAME or "unknown")
 
     # Start web server for webhooks
     runner = await start_web_server()

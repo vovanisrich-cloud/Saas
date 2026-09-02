@@ -122,8 +122,10 @@ async def create_wayforpay_invoice(
         RESERVATION_TTL_MINUTES,
     )
     from saas.utils import mask_card_last4, split_full_name
+    from database import _decrypt_card_number
 
     invoice_amount = DEPOSIT_AMOUNT_UAH if amount is None else int(amount)
+    master_card_number = _decrypt_card_number(master_card_number)
     order_date = int(time.time())
     amount_value = format_wayforpay_amount(invoice_amount)
     currency = "UAH"
@@ -201,49 +203,25 @@ async def create_wayforpay_invoice(
     }
     if not payload["serviceUrl"]:
         payload.pop("serviceUrl")
-    if master_card_number:
-        payload["regularMode"] = "client"
-        payload["receiver"] = [
-            {
-                "type": "card",
-                "value": master_card_number,
-                "percent": 100,
-                "merchantAccount": WAYFORPAY_MERCHANT_ACCOUNT,
-            }
-        ]
-
+    # We deliberately keep the payment on the merchant account during invoice creation.
+    # The actual payout to the master happens explicitly after payment confirmation via
+    # TRANSFER_TO_CARD so that commission and cancellation logic remain under our control.
     try:
-        result = await _post_wayforpay_json(payload, "CREATE_INVOICE")
+        return await _post_wayforpay_json(payload, "CREATE_INVOICE")
     except RuntimeError:
-        if not master_card_number or "receiver" not in payload:
-            raise
-        logger.warning(
-            "WayForPay CREATE_INVOICE rejected receiver routing, retrying without it for order %s",
-            request_id,
-        )
-        payload.pop("receiver", None)
-        payload.pop("regularMode", None)
-        return await _post_wayforpay_json(payload, "CREATE_INVOICE")
-
-    if master_card_number and payload.get("receiver") and not result.get("invoiceUrl"):
-        logger.warning(
-            "WayForPay CREATE_INVOICE did not return invoiceUrl with receiver routing, retrying without it for order %s",
-            request_id,
-        )
-        payload.pop("receiver", None)
-        payload.pop("regularMode", None)
-        return await _post_wayforpay_json(payload, "CREATE_INVOICE")
-    return result
+        raise
 
 
-async def transfer_wayforpay_to_master_card(pending: dict, amount: int | None = None) -> None:
-    """Transfer payment to master's card via WayForPay."""
+async def transfer_wayforpay_to_master_card(pending: dict, amount: int | None = None) -> str:
+    """Transfer payment to master's card via WayForPay. Returns one of: success/error/skipped."""
     from saas.config import WAYFORPAY_MERCHANT_ACCOUNT, WAYFORPAY_SECRET_KEY, DEPOSIT_AMOUNT_UAH
     from saas.utils import mask_card_last4
+    from database import _decrypt_card_number
 
-    card_number = (pending.get("card_number") or "").strip()
+    card_number = _decrypt_card_number((pending.get("card_number") or "").strip())
     if not card_number:
-        return
+        logger.warning("WayForPay payout skipped: no master card on pending %s", pending.get("request_id"))
+        return "skipped"
 
     payout_amount = int(amount if amount is not None else (pending.get("amount") or DEPOSIT_AMOUNT_UAH))
     original_reference = str(pending.get("request_id") or pending.get("payment_invoice_id") or "")
@@ -273,12 +251,14 @@ async def transfer_wayforpay_to_master_card(pending: dict, amount: int | None = 
     last4 = mask_card_last4(card_number)
     try:
         result = await _post_wayforpay_json(payload, "TRANSFER_TO_CARD")
+        status = result.get("transactionStatus") or result.get("reason") or "ok"
         logger.info(
             "WayForPay TRANSFER_TO_CARD sent for %s to card •••• %s: %s",
             original_reference,
             last4,
-            result.get("transactionStatus") or result.get("reason") or "ok",
+            status,
         )
+        return "success"
     except Exception as exc:
         logger.exception(
             "WayForPay TRANSFER_TO_CARD failed for %s to card •••• %s: %s",
@@ -286,6 +266,7 @@ async def transfer_wayforpay_to_master_card(pending: dict, amount: int | None = 
             last4,
             exc,
         )
+        return "error"
 
 
 async def fetch_wayforpay_invoice_status(order_reference: str) -> dict:

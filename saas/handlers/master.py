@@ -5,7 +5,7 @@ from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 
-from ..config import PLATFORM_COMMISSION_PERCENT
+from ..config import PLATFORM_COMMISSION_PERCENT, BOT_USERNAME
 from ..states import MasterOnboardingStates
 from ..keyboards import (
     get_master_done_keyboard,
@@ -241,7 +241,8 @@ async def send_master_link(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Профіль не знайдено. Спочатку зареєструйтеся.", show_alert=True)
         return
 
-    link = f"https://t.me/bookme_beauty_bot?start=master_{callback.from_user.id}"
+    bot_username = BOT_USERNAME or "bookme_beauty_bot"
+    link = f"https://t.me/{bot_username}?start=master_{callback.from_user.id}"
     await safe_edit_text(
         callback.message,
         f"Ось твоє посилання для клієнтів:\n\n{link}\n\n"

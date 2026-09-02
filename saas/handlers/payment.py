@@ -51,16 +51,37 @@ async def cmd_test_pay(message: types.Message, command: CommandObject):
         await message.answer("Команда не найдена")
         return
 
-    lookup = (command.args or "").strip() or None
-    pending = BookingDatabase.get_pending_payment_for_test(message.from_user.id, lookup)
-    if pending is None and not lookup:
-        pending = BookingDatabase.get_pending_payment_for_test(None, None)
+    raw_args = (command.args or "").strip()
+    allow_other_users = False
+    lookup = None
+    if raw_args:
+        parts = raw_args.split()
+        flags = {"--all", "--other", "--foreign", "--admin-other"}
+        lookup_parts = [part for part in parts if part not in flags]
+        allow_other_users = bool(set(parts) & flags)
+        lookup = " ".join(lookup_parts).strip() or None
+
+    pending = BookingDatabase.get_pending_payment_for_test(
+        message.from_user.id,
+        lookup,
+        allow_other_users=allow_other_users,
+    )
+    if pending is None and not lookup and not allow_other_users:
+        pending = BookingDatabase.get_pending_payment_for_test(message.from_user.id, None, allow_other_users=False)
     if not pending:
         if lookup:
-            await message.answer(f"Бронь {lookup} не найдена.")
+            await message.answer(f"Бронь {lookup} не найдена для этого пользователя.")
         else:
             await message.answer("Нет активной PENDING-брони. Сначала выбери слот и дойди до оплаты.")
         return
+
+    logger.info(
+        "Admin test payment invoked by telegram_id=%s for pending_id=%s lookup=%s allow_other_users=%s",
+        message.from_user.id,
+        pending.get("id"),
+        lookup,
+        allow_other_users,
+    )
 
     if pending.get("status") == "paid":
         await message.answer(
@@ -80,7 +101,7 @@ async def cmd_test_pay(message: types.Message, command: CommandObject):
         return
 
     await message.answer(
-        f"✅ [TEST] Бронь {booking_id} переведена в PAID. Уведомления отправлены."
+        f"✅ [TEST] Бронь {booking_id} переведена в PAID без реальной оплаты. Уведомления отправлены."
     )
 
 

@@ -12,12 +12,14 @@ if env_path.exists():
 
 # Telegram Bot
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+BOT_USERNAME = os.getenv("BOT_USERNAME", "").strip()
 
 # WayForPay Configuration
 WAYFORPAY_MERCHANT_ACCOUNT = os.getenv("WAYFORPAY_MERCHANT_ACCOUNT", "test_merch_n1").strip()
 WAYFORPAY_SECRET_KEY = os.getenv("WAYFORPAY_SECRET_KEY", "").strip()
 WAYFORPAY_DOMAIN_NAME = os.getenv("WAYFORPAY_DOMAIN_NAME", "localhost").strip()
-PAYMENT_WEBHOOK_SECRET = os.getenv("PAYMENT_WEBHOOK_SECRET", "wayforpay-webhook-secret").strip()
+PAYMENT_WEBHOOK_SECRET = os.getenv("PAYMENT_WEBHOOK_SECRET", "").strip()
+CARD_ENCRYPTION_KEY = os.getenv("CARD_ENCRYPTION_KEY", "").strip()
 WAYFORPAY_SERVICE_URL = os.getenv("WAYFORPAY_SERVICE_URL", "").strip()
 
 if not WAYFORPAY_SERVICE_URL:
@@ -31,7 +33,7 @@ APP_PORT = int(os.getenv("APP_PORT", "8080").strip())
 
 # Payment Configuration
 PAYMENT_PROVIDER = "wayforpay"
-DEPOSIT_AMOUNT_UAH = 200
+DEPOSIT_AMOUNT_UAH = int(os.getenv("DEPOSIT_AMOUNT_UAH", "200").strip())
 PLATFORM_COMMISSION_PERCENT = int(os.getenv("PLATFORM_COMMISSION_PERCENT", "10"))
 RESERVATION_TTL_MINUTES = int(os.getenv("RESERVATION_TTL_MINUTES", "30"))
 WAYFORPAY_API_URL = "https://api.wayforpay.com/api"
@@ -65,6 +67,21 @@ if not WAYFORPAY_SECRET_KEY:
         "WAYFORPAY_SECRET_KEY is not set. "
         "Add it to your environment variables or to a .env file in the project root."
     )
+if not PAYMENT_WEBHOOK_SECRET or PAYMENT_WEBHOOK_SECRET == "wayforpay-webhook-secret":
+    raise RuntimeError(
+        "PAYMENT_WEBHOOK_SECRET is not set. "
+        "Set a unique webhook secret in your environment variables or .env file."
+    )
+if not CARD_ENCRYPTION_KEY:
+    raise RuntimeError(
+        "CARD_ENCRYPTION_KEY is not set. "
+        "Generate a Fernet key and add it to CARD_ENCRYPTION_KEY in your environment or .env file."
+    )
+try:
+    from cryptography.fernet import Fernet
+    Fernet(CARD_ENCRYPTION_KEY.encode("utf-8"))
+except Exception as exc:
+    raise RuntimeError("CARD_ENCRYPTION_KEY is invalid. Provide a valid Fernet base64-encoded key.") from exc
 if WAYFORPAY_DOMAIN_NAME.lower() == "localhost":
     logger.warning(
         "WAYFORPAY_DOMAIN_NAME is set to localhost. WayForPay usually expects the merchant domain configured in your store."

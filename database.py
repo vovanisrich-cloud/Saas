@@ -1,13 +1,59 @@
 import os
 import sqlite3
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 from typing import List, Optional, Tuple
 
+from cryptography.fernet import Fernet
+
+logger = logging.getLogger(__name__)
+
 DATABASE_FILE = os.getenv("DATABASE_FILE", "bookings.db")
 ACTIVE_PAYMENT_STATUSES = ("creating", "pending_payment", "processing")
+
+
+def _get_fernet() -> Optional[Fernet]:
+    from saas.config import CARD_ENCRYPTION_KEY
+
+    if not CARD_ENCRYPTION_KEY:
+        return None
+    try:
+        return Fernet(CARD_ENCRYPTION_KEY.encode("utf-8"))
+    except Exception:
+        return None
+
+
+def _encrypt_card_number(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    cipher = _get_fernet()
+    if cipher is None:
+        return normalized
+    try:
+        return cipher.encrypt(normalized.encode("utf-8")).decode("utf-8")
+    except Exception:
+        return normalized
+
+
+def _decrypt_card_number(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    cipher = _get_fernet()
+    if cipher is None:
+        return raw
+    try:
+        return cipher.decrypt(raw.encode("utf-8")).decode("utf-8")
+    except Exception:
+        return raw
 
 
 def _utc_now_str() -> str:
@@ -22,8 +68,10 @@ class BookingDatabase:
         database_path = Path(DATABASE_FILE)
         if database_path.parent and not database_path.parent.exists():
             database_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(DATABASE_FILE)
+        conn = sqlite3.connect(DATABASE_FILE, timeout=5.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout = 5000")
         return conn
 
     @staticmethod
@@ -404,10 +452,14 @@ class BookingDatabase:
         master_telegram_id: int = 0,
     ) -> Optional[str]:
         """Create a temporary hold for a slot before the payment is created."""
+        from saas.config import RESERVATION_TTL_MINUTES
+
         if not request_id:
             request_id = f"wp_{uuid4().hex[:24]}"
         if not expires_at:
-            expires_at = _utc_now_str()
+            expires_at = (
+                datetime.now(timezone.utc) + __import__("datetime").timedelta(minutes=RESERVATION_TTL_MINUTES)
+            ).strftime("%Y-%m-%d %H:%M:%S")
         master_telegram_id = master_telegram_id or 0
 
         try:
@@ -425,7 +477,7 @@ class BookingDatabase:
                     )
                     master_row = cursor.fetchone()
                     if master_row:
-                        master_card_number = (master_row["card_number"] or "").strip() or None
+                        master_card_number = _encrypt_card_number((master_row["card_number"] or "").strip() or None)
                 cursor.execute(
                     """
                     INSERT INTO pending_payments (
@@ -496,7 +548,11 @@ class BookingDatabase:
                 (invoice_id,),
             )
             row = cursor.fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            profile = dict(row)
+            profile["card_number"] = _decrypt_card_number(profile.get("card_number"))
+            return profile
 
     @staticmethod
     def get_pending_payment_by_request(request_id: str) -> Optional[dict]:
@@ -511,11 +567,20 @@ class BookingDatabase:
                 (request_id,),
             )
             row = cursor.fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            profile = dict(row)
+            profile["card_number"] = _decrypt_card_number(profile.get("card_number"))
+            return profile
 
     @staticmethod
-    def get_pending_payment_for_test(user_id: Optional[int] = None, lookup: Optional[str] = None) -> Optional[dict]:
-        """Find a pending reservation by id/request_id, or the latest active unpaid hold."""
+    def get_pending_payment_for_test(
+        user_id: Optional[int] = None,
+        lookup: Optional[str] = None,
+        *,
+        allow_other_users: bool = False,
+    ) -> Optional[dict]:
+        """Find a pending reservation for the calling user unless admin explicitly asks to search elsewhere."""
         with BookingDatabase._connect() as conn:
             cursor = conn.cursor()
             if lookup:
@@ -523,24 +588,35 @@ class BookingDatabase:
                 token = raw
                 if token.lower().startswith("booking_"):
                     token = token.split("_", 1)[1]
+                conditions = [
+                    "request_id = ?",
+                    "payment_invoice_id = ?",
+                    "CAST(id AS TEXT) = ?",
+                    "CAST(booking_id AS TEXT) = ?",
+                ]
+                params: list[str] = [raw, raw, token, token]
+                if user_id is not None and not allow_other_users:
+                    conditions.append("user_id = ?")
+                    params.append(str(user_id))
                 cursor.execute(
-                    """
+                    f"""
                     SELECT *
                     FROM pending_payments
-                    WHERE request_id = ?
-                       OR payment_invoice_id = ?
-                       OR CAST(id AS TEXT) = ?
-                       OR CAST(booking_id AS TEXT) = ?
+                    WHERE {' OR '.join(conditions)}
                     ORDER BY datetime(created_at) DESC, id DESC
                     LIMIT 1
                     """,
-                    (raw, raw, token, token),
+                    params,
                 )
                 row = cursor.fetchone()
-                return dict(row) if row else None
+                if not row:
+                    return None
+                profile = dict(row)
+                profile["card_number"] = _decrypt_card_number(profile.get("card_number"))
+                return profile
 
             placeholders = ",".join("?" for _ in ACTIVE_PAYMENT_STATUSES)
-            if user_id is not None:
+            if user_id is not None and not allow_other_users:
                 cursor.execute(
                     f"""
                     SELECT *
@@ -564,51 +640,67 @@ class BookingDatabase:
                     ACTIVE_PAYMENT_STATUSES,
                 )
             row = cursor.fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            profile = dict(row)
+            profile["card_number"] = _decrypt_card_number(profile.get("card_number"))
+            return profile
 
     @staticmethod
     def mark_payment_status(invoice_id: str, status: str) -> bool:
         """Update payment status without finalizing the booking."""
-        with BookingDatabase._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE pending_payments
-                SET status = ?, updated_at = ?
-                WHERE payment_invoice_id = ?
-                """,
-                (status, _utc_now_str(), invoice_id),
-            )
-            return cursor.rowcount > 0
+        try:
+            with BookingDatabase._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    UPDATE pending_payments
+                    SET status = ?, updated_at = ?
+                    WHERE payment_invoice_id = ?
+                    """,
+                    (status, _utc_now_str(), invoice_id),
+                )
+                return cursor.rowcount > 0
+        except sqlite3.Error as exc:
+            logger.warning("mark_payment_status failed for invoice_id=%s: %s", invoice_id, exc)
+            return False
 
     @staticmethod
     def update_pending_status_by_request(request_id: str, status: str) -> bool:
         """Update the status of a reservation before the invoice exists or when it fails."""
-        with BookingDatabase._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                UPDATE pending_payments
-                SET status = ?, updated_at = ?
-                WHERE request_id = ?
-                """,
-                (status, _utc_now_str(), request_id),
-            )
-            return cursor.rowcount > 0
+        try:
+            with BookingDatabase._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    UPDATE pending_payments
+                    SET status = ?, updated_at = ?
+                    WHERE request_id = ?
+                    """,
+                    (status, _utc_now_str(), request_id),
+                )
+                return cursor.rowcount > 0
+        except sqlite3.Error as exc:
+            logger.warning("update_pending_status_by_request failed for request_id=%s: %s", request_id, exc)
+            return False
 
     @staticmethod
     def delete_pending_by_request(request_id: str) -> bool:
         """Remove a temporary hold entirely."""
-        with BookingDatabase._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                DELETE FROM pending_payments
-                WHERE request_id = ?
-                """,
-                (request_id,),
-            )
-            return cursor.rowcount > 0
+        try:
+            with BookingDatabase._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    DELETE FROM pending_payments
+                    WHERE request_id = ?
+                    """,
+                    (request_id,),
+                )
+                return cursor.rowcount > 0
+        except sqlite3.Error as exc:
+            logger.warning("delete_pending_by_request failed for request_id=%s: %s", request_id, exc)
+            return False
 
     @staticmethod
     def finalize_booking_from_payment(invoice_id: str) -> Optional[int]:
@@ -800,6 +892,7 @@ class BookingDatabase:
                 return None
 
             profile = dict(row)
+            profile["card_number"] = _decrypt_card_number(profile.get("card_number"))
             profile["services"] = json.loads(profile.get("services_json") or "[]")
             profile["schedule"] = json.loads(profile.get("schedule_json") or "[]")
             return profile
@@ -815,6 +908,7 @@ class BookingDatabase:
         duration_minutes: int = 60,
         card_number: Optional[str] = None,
     ) -> bool:
+        encrypted_card_number = _encrypt_card_number(card_number)
         payload = (
             master_telegram_id,
             master_name,
@@ -823,7 +917,7 @@ class BookingDatabase:
             greeting_text,
             1 if is_active else 0,
             duration_minutes,
-            card_number,
+            encrypted_card_number,
             _utc_now_str(),
             _utc_now_str(),
         )

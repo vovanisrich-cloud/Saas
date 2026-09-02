@@ -35,8 +35,11 @@ def normalize_card_number(raw: str | None) -> str:
 
 
 def mask_card_last4(card_number: str | None) -> str | None:
-    """Extract last 4 digits of card number."""
-    digits = "".join(ch for ch in (card_number or "") if ch.isdigit())
+    """Extract last 4 digits of card number, supporting encrypted values from storage."""
+    from database import _decrypt_card_number
+
+    plain_card = _decrypt_card_number(card_number)
+    digits = "".join(ch for ch in (plain_card or "") if ch.isdigit())
     if len(digits) < 4:
         return None
     return digits[-4:]
