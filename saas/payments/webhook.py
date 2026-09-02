@@ -92,7 +92,8 @@ async def complete_booking_after_payment(bot, pending: dict, *, transfer_payout:
             "master_amount": int(pending.get("amount") or 0),
         }
     await notify_booking_confirmed(bot, pending)
-    await notify_master(bot, pending.get("master_telegram_id"), notify_payload)
+    owner_telegram_id = BookingDatabase.get_master_owner(pending.get("master_telegram_id"))
+    await notify_master(bot, owner_telegram_id, notify_payload)
     return booking_id
 
 

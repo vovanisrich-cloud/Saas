@@ -80,4 +80,4 @@ def _can_use_test_pay(user_id: int) -> bool:
         return False
     if WAYFORPAY_DEBUG:
         return True
-    return BookingDatabase.get_master_profile(user_id) is not None
+    return bool(BookingDatabase.get_master_profiles_by_owner(user_id))

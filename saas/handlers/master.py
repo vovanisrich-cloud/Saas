@@ -13,6 +13,7 @@ from ..keyboards import (
     get_master_confirmation_keyboard,
     build_master_confirmation_preview,
     MASTER_CARD_PROMPT,
+    get_role_selection_keyboard,
 )
 from ..utils import safe_edit_text, normalize_card_number, is_valid_luhn, mask_card_last4
 from database import BookingDatabase
@@ -150,19 +151,21 @@ async def process_master_card(message: types.Message, state: FSMContext):
     await state.update_data(card_number=card_number)
     data = await state.get_data()
     if data.get("updating_card_only"):
-        profile = BookingDatabase.get_master_profile(message.from_user.id)
+        active_id = BookingDatabase.get_active_profile_id(message.from_user.id)
+        profile = BookingDatabase.get_master_profile_by_id(active_id) if active_id else None
         if not profile:
             await message.answer("Профіль не знайдено. Спочатку зареєструйтеся.")
             await state.clear()
             return
         BookingDatabase.upsert_master_profile(
-            master_telegram_id=message.from_user.id,
+            owner_telegram_id=message.from_user.id,
             master_name=profile.get("master_name") or "",
             services=profile.get("services") or [],
             schedule=profile.get("schedule") or [],
             greeting_text=profile.get("greeting_text"),
             duration_minutes=int(profile.get("duration_minutes") or 60),
             card_number=card_number,
+            master_id=profile["id"],
         )
         last4 = card_number[-4:]
         await message.answer(
@@ -189,20 +192,22 @@ async def save_master_profile(callback: types.CallbackQuery, state: FSMContext):
     master_telegram_id = callback.from_user.id
 
     saved = BookingDatabase.upsert_master_profile(
-        master_telegram_id=master_telegram_id,
+        owner_telegram_id=master_telegram_id,
         master_name=master_name,
         services=services,
         schedule=schedule,
         greeting_text=None,
         duration_minutes=duration_minutes,
         card_number=card_number,
+        master_id=None,
     )
-    if not saved:
+    if saved is None:
         await safe_edit_text(callback.message, "Не вдалося зберегти профіль. Спробуйте ще раз.", reply_markup=None)
         await callback.answer()
         await state.clear()
         return
 
+    BookingDatabase.set_active_profile_id(master_telegram_id, saved)
     await safe_edit_text(callback.message, "✅ Профіль майстра збережено!", reply_markup=get_master_menu_keyboard())
     await callback.answer("Збережено")
     await state.clear()
@@ -220,7 +225,8 @@ async def cancel_master_registration(callback: types.CallbackQuery, state: FSMCo
 @router.callback_query(F.data == "master_set_card")
 async def start_master_card_update(callback: types.CallbackQuery, state: FSMContext):
     """Start card update flow."""
-    profile = BookingDatabase.get_master_profile(callback.from_user.id)
+    active_id = BookingDatabase.get_active_profile_id(callback.from_user.id)
+    profile = BookingDatabase.get_master_profile_by_id(active_id) if active_id else None
     if not profile:
         await callback.answer("Профіль не знайдено. Спочатку зареєструйтеся.", show_alert=True)
         return
@@ -236,7 +242,8 @@ async def send_master_link(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     profile = data.get("master_profile")
     if not profile:
-        profile = BookingDatabase.get_master_profile(callback.from_user.id)
+        active_id = BookingDatabase.get_active_profile_id(callback.from_user.id)
+        profile = BookingDatabase.get_master_profile_by_id(active_id) if active_id else None
     if not profile:
         await callback.answer("Профіль не знайдено. Спочатку зареєструйтеся.", show_alert=True)
         return
@@ -244,7 +251,7 @@ async def send_master_link(callback: types.CallbackQuery, state: FSMContext):
     from ..config import BOT_USERNAME
 
     bot_username = BOT_USERNAME or "bookme_beauty_bot"
-    link = f"https://t.me/{bot_username}?start=master_{callback.from_user.id}"
+    link = f"https://t.me/{bot_username}?start=master_{profile['id']}"
     await safe_edit_text(
         callback.message,
         f"Ось твоє посилання для клієнтів:\n\n{link}\n\n"
@@ -260,7 +267,8 @@ async def view_master_profile(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     profile = data.get("master_profile")
     if not profile:
-        profile = BookingDatabase.get_master_profile(callback.from_user.id)
+        active_id = BookingDatabase.get_active_profile_id(callback.from_user.id)
+        profile = BookingDatabase.get_master_profile_by_id(active_id) if active_id else None
     if not profile:
         await callback.answer("Профіль не знайдено.", show_alert=True)
         return
@@ -280,4 +288,92 @@ async def view_master_profile(callback: types.CallbackQuery, state: FSMContext):
         + "\n".join(f"• {s}" for s in schedule)
     )
     await safe_edit_text(callback.message, text, reply_markup=get_master_menu_keyboard(), parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "master_my_profiles")
+async def show_my_profiles(callback: types.CallbackQuery, state: FSMContext):
+    """Show all profiles owned by the Telegram account."""
+    profiles = BookingDatabase.get_master_profiles_by_owner(callback.from_user.id)
+    if not profiles:
+        await safe_edit_text(
+            callback.message,
+            "У вас ще немає профілів майстра.",
+            reply_markup=get_role_selection_keyboard(),
+        )
+        await callback.answer()
+        return
+
+    buttons = [
+        [
+            types.InlineKeyboardButton(
+                text=f"{'✅' if profile['is_active'] else '💤'} {profile['master_name']}",
+                callback_data=f"master_switch_to:{profile['id']}",
+            )
+        ]
+        for profile in profiles
+    ]
+    buttons.extend(
+        [
+            [types.InlineKeyboardButton(text="➕ Зареєструвати новий профіль", callback_data="role_master")],
+            [types.InlineKeyboardButton(text="⬅️ Назад", callback_data="master_back_to_roles")],
+        ]
+    )
+    await safe_edit_text(
+        callback.message,
+        "Оберіть профіль майстра:",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("master_switch_to:"))
+async def switch_to_profile(callback: types.CallbackQuery, state: FSMContext):
+    """Switch to an owned master profile and reactivate it if needed."""
+    try:
+        master_id = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("Некоректний профіль.", show_alert=True)
+        return
+
+    profile = BookingDatabase.get_master_profile_by_id(master_id)
+    if not profile or profile.get("owner_telegram_id") != callback.from_user.id:
+        await callback.answer("Це не ваш профіль.", show_alert=True)
+        return
+    if not profile.get("is_active"):
+        BookingDatabase.reactivate_master_profile(master_id, callback.from_user.id)
+    BookingDatabase.set_active_profile_id(callback.from_user.id, master_id)
+    await state.update_data(entry_mode="master", master_telegram_id=master_id, master_profile=profile)
+    await safe_edit_text(
+        callback.message,
+        f"Перемкнулись на профіль «{profile['master_name']}» ✅",
+        reply_markup=get_master_menu_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "master_logout")
+async def logout_from_profile(callback: types.CallbackQuery, state: FSMContext):
+    """Leave the current profile without deleting its data."""
+    active_id = BookingDatabase.get_active_profile_id(callback.from_user.id)
+    if active_id is not None:
+        BookingDatabase.deactivate_master_profile(active_id, callback.from_user.id)
+        BookingDatabase.set_active_profile_id(callback.from_user.id, None)
+    await state.clear()
+    await safe_edit_text(
+        callback.message,
+        "Вийшли з профілю. Дані збережені — можна повернутись через «Мої профілі» або зареєструвати новий.",
+        reply_markup=get_role_selection_keyboard(include_profiles=True),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "master_back_to_roles")
+async def back_to_role_selection(callback: types.CallbackQuery, state: FSMContext):
+    """Return from profile selection to role selection."""
+    await safe_edit_text(
+        callback.message,
+        "🌸 Привіт! Ласкаво просимо!\n\nХто ви?",
+        reply_markup=get_role_selection_keyboard(include_profiles=True),
+    )
     await callback.answer()

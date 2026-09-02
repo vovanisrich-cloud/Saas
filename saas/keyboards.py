@@ -1,6 +1,7 @@
 """Keyboard builders and text formatting for user interface."""
 
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 
@@ -56,7 +57,7 @@ def get_date_calendar_keyboard() -> InlineKeyboardMarkup:
     }
     keyboard_buttons = []
     for i in range(7):
-        current_date = datetime.now() + timedelta(days=i)
+        current_date = datetime.now(ZoneInfo("Europe/Kyiv")) + timedelta(days=i)
         date_str = current_date.strftime("%Y-%m-%d")
         day_name_uk = days_uk.get(current_date.strftime("%a"), current_date.strftime("%a"))
         date_display = f"{day_name_uk}, {current_date.strftime('%d.%m')}"
@@ -77,14 +78,15 @@ def get_time_keyboard(booking_date: str, master_telegram_id: int | None = None):
     return InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
 
 
-def get_role_selection_keyboard() -> InlineKeyboardMarkup:
+def get_role_selection_keyboard(include_profiles: bool = False) -> InlineKeyboardMarkup:
     """Keyboard for role selection (master or client)."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+    buttons = [
             [InlineKeyboardButton(text="Я майстер, хочу зареєструватися", callback_data="role_master")],
             [InlineKeyboardButton(text="Я клієнт, хочу записатися", callback_data="role_client")],
-        ]
-    )
+    ]
+    if include_profiles:
+        buttons.append([InlineKeyboardButton(text="🔄 Мої профілі", callback_data="master_my_profiles")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def get_master_done_keyboard() -> InlineKeyboardMarkup:
@@ -101,6 +103,8 @@ def get_master_menu_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Отримати моє посилання", callback_data="master_get_link")],
             [InlineKeyboardButton(text="💳 Змінити картку", callback_data="master_set_card")],
             [InlineKeyboardButton(text="Мій профіль", callback_data="master_view_profile")],
+            [InlineKeyboardButton(text="🔄 Мої профілі", callback_data="master_my_profiles")],
+            [InlineKeyboardButton(text="🚪 Вийти з профілю", callback_data="master_logout")],
         ]
     )
 

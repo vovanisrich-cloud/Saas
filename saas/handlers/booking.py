@@ -45,7 +45,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
             await state.clear()
             return
 
-        profile = BookingDatabase.get_master_profile(master_id)
+        profile = BookingDatabase.get_master_profile_by_id(master_id)
         if not profile:
             await message.answer("Майстра не знайдено. Спробуйте інше посилання.")
             await state.clear()
@@ -64,24 +64,27 @@ async def cmd_start(message: types.Message, state: FSMContext):
         await state.set_state(BeautyBookingStates.waiting_for_service)
         return
 
-    profile = BookingDatabase.get_master_profile(message.from_user.id)
-    if profile:
+    active_id = BookingDatabase.get_active_profile_id(message.from_user.id)
+    profile = BookingDatabase.get_master_profile_by_id(active_id) if active_id else None
+    if profile and profile.get("owner_telegram_id") == message.from_user.id and profile.get("is_active"):
         await state.clear()
         await state.update_data(
             entry_mode="master",
-            master_telegram_id=message.from_user.id,
+            master_telegram_id=profile["id"],
             master_profile=profile,
         )
         from ..keyboards import get_master_menu_keyboard
         await message.answer(
-            "🌸 Вітаю, майстре! Ось ваше меню:",
+            f"🌸 Вітаю, майстре! Ти працюєш як: {profile['master_name']}\n\nОсь твоє меню:",
             reply_markup=get_master_menu_keyboard(),
         )
         return
 
+    profiles = BookingDatabase.get_master_profiles_by_owner(message.from_user.id)
+    role_keyboard = get_role_selection_keyboard(include_profiles=bool(profiles))
     await message.answer(
         "🌸 Привіт! Ласкаво просимо!\n\nХто ви?",
-        reply_markup=get_role_selection_keyboard(),
+        reply_markup=role_keyboard,
     )
     await state.clear()
 

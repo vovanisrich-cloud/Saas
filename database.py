@@ -2,7 +2,7 @@ import os
 import sqlite3
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 from typing import List, Optional, Tuple
@@ -85,6 +85,7 @@ class BookingDatabase:
                 CREATE TABLE IF NOT EXISTS bookings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
+                    -- This field stores masters.id (business profile), not the owner's Telegram ID.
                     master_telegram_id INTEGER,
                     full_name TEXT NOT NULL,
                     phone_number TEXT NOT NULL,
@@ -121,6 +122,7 @@ class BookingDatabase:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     request_id TEXT NOT NULL UNIQUE,
                     user_id INTEGER NOT NULL,
+                    -- This field stores masters.id (business profile), not the owner's Telegram ID.
                     master_telegram_id INTEGER,
                     full_name TEXT NOT NULL,
                     phone_number TEXT NOT NULL,
@@ -185,7 +187,8 @@ class BookingDatabase:
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS masters (
-                    telegram_id INTEGER PRIMARY KEY,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner_telegram_id INTEGER NOT NULL,
                     master_name TEXT NOT NULL,
                     services_json TEXT NOT NULL DEFAULT '[]',
                     schedule_json TEXT NOT NULL DEFAULT '[]',
@@ -196,6 +199,8 @@ class BookingDatabase:
                 )
                 """
             )
+
+            legacy_master_ids = BookingDatabase._migrate_masters_schema(cursor)
 
             BookingDatabase._ensure_columns(
                 cursor,
@@ -212,6 +217,84 @@ class BookingDatabase:
                 ON masters (is_active)
                 """
             )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_masters_owner
+                ON masters (owner_telegram_id)
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS owner_active_profile (
+                    owner_telegram_id INTEGER PRIMARY KEY,
+                    active_master_id INTEGER
+                )
+                """
+            )
+            for legacy_owner_id, profile_id in legacy_master_ids.items():
+                cursor.execute(
+                    """
+                    UPDATE bookings
+                    SET master_telegram_id = ?
+                    WHERE master_telegram_id = ?
+                    """,
+                    (profile_id, legacy_owner_id),
+                )
+                cursor.execute(
+                    """
+                    UPDATE pending_payments
+                    SET master_telegram_id = ?
+                    WHERE master_telegram_id = ?
+                    """,
+                    (profile_id, legacy_owner_id),
+                )
+
+    @staticmethod
+    def _migrate_masters_schema(cursor: sqlite3.Cursor):
+        """Migrate the old Telegram-account-keyed masters table to profile IDs."""
+        cursor.execute("PRAGMA table_info(masters)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "owner_telegram_id" in columns and "id" in columns:
+            return {}
+
+        logger.info("Migrating masters table to multi-profile schema")
+        cursor.execute("SELECT telegram_id FROM masters")
+        legacy_owner_ids = [row[0] for row in cursor.fetchall()]
+        cursor.execute("ALTER TABLE masters RENAME TO masters_old")
+        cursor.execute(
+            """
+            CREATE TABLE masters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_telegram_id INTEGER NOT NULL,
+                master_name TEXT NOT NULL,
+                services_json TEXT NOT NULL DEFAULT '[]',
+                schedule_json TEXT NOT NULL DEFAULT '[]',
+                greeting_text TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                duration_minutes INTEGER DEFAULT 60,
+                card_number TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cursor.execute(
+            """
+            INSERT INTO masters (
+                owner_telegram_id, master_name, services_json, schedule_json,
+                greeting_text, is_active, duration_minutes, card_number,
+                created_at, updated_at
+            )
+            SELECT
+                telegram_id, master_name, services_json, schedule_json,
+                greeting_text, is_active, duration_minutes, card_number,
+                created_at, updated_at
+            FROM masters_old
+            """
+        )
+        cursor.execute("DROP TABLE masters_old")
+        cursor.execute("SELECT id, owner_telegram_id FROM masters")
+        return {owner_id: profile_id for profile_id, owner_id in cursor.fetchall()}
 
     @staticmethod
     def _migrate_bookings_to_per_master_unique(cursor: sqlite3.Cursor):
@@ -228,7 +311,6 @@ class BookingDatabase:
         if "UNIQUE(master_telegram_id, booking_date, booking_time)" in create_sql:
             return
 
-        logger = __import__("logging").getLogger(__name__)
         logger.info("Migrating bookings table to per-master unique constraint")
 
         cursor.execute("ALTER TABLE bookings RENAME TO bookings_old")
@@ -284,7 +366,6 @@ class BookingDatabase:
         if "master_telegram_id" in index_sql:
             return
 
-        logger = __import__("logging").getLogger(__name__)
         logger.info("Migrating idx_pending_active_slot to per-master unique index")
 
         cursor.execute("DROP INDEX idx_pending_active_slot")
@@ -457,9 +538,9 @@ class BookingDatabase:
         if not request_id:
             request_id = f"wp_{uuid4().hex[:24]}"
         if not expires_at:
-            expires_at = (
-                datetime.now(timezone.utc) + __import__("datetime").timedelta(minutes=RESERVATION_TTL_MINUTES)
-            ).strftime("%Y-%m-%d %H:%M:%S")
+            expires_at = (datetime.now(timezone.utc) + timedelta(minutes=RESERVATION_TTL_MINUTES)).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
         master_telegram_id = master_telegram_id or 0
 
         try:
@@ -471,7 +552,7 @@ class BookingDatabase:
                         """
                         SELECT card_number
                         FROM masters
-                        WHERE telegram_id = ?
+                        WHERE id = ?
                         """,
                         (master_telegram_id,),
                     )
@@ -779,20 +860,24 @@ class BookingDatabase:
             return None
 
     @staticmethod
-    def cancel_booking(booking_id: int, master_telegram_id: int) -> Optional[dict]:
+    def cancel_booking(booking_id: int, requester_telegram_id: int) -> Optional[dict]:
         """Delete a booking only if it belongs to the given master."""
         with BookingDatabase._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT id, user_id, full_name, phone_number, service, booking_date, booking_time
+                SELECT id, user_id, master_telegram_id, full_name, phone_number, service, booking_date, booking_time
                 FROM bookings
-                WHERE id = ? AND master_telegram_id = ?
+                WHERE id = ?
                 """,
-                (booking_id, master_telegram_id),
+                (booking_id,),
             )
             row = cursor.fetchone()
             if not row:
+                return None
+
+            owner_telegram_id = BookingDatabase.get_master_owner(row["master_telegram_id"])
+            if owner_telegram_id != requester_telegram_id:
                 return None
 
             cursor.execute("DELETE FROM bookings WHERE id = ?", (booking_id,))
@@ -876,16 +961,16 @@ class BookingDatabase:
             return dict(row) if row else None
 
     @staticmethod
-    def get_master_profile(master_telegram_id: int) -> Optional[dict]:
+    def get_master_profile_by_id(master_id: int) -> Optional[dict]:
         with BookingDatabase._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
                 SELECT *
                 FROM masters
-                WHERE telegram_id = ? AND is_active = 1
+                WHERE id = ?
                 """,
-                (master_telegram_id,),
+                (master_id,),
             )
             row = cursor.fetchone()
             if not row:
@@ -898,8 +983,75 @@ class BookingDatabase:
             return profile
 
     @staticmethod
+    def get_master_profile(master_id: int) -> Optional[dict]:
+        """Backward-compatible alias for profile-ID lookup."""
+        return BookingDatabase.get_master_profile_by_id(master_id)
+
+    @staticmethod
+    def get_master_profiles_by_owner(owner_telegram_id: int) -> list[dict]:
+        with BookingDatabase._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, owner_telegram_id, master_name, is_active, created_at
+                FROM masters
+                WHERE owner_telegram_id = ?
+                ORDER BY is_active DESC, datetime(created_at) ASC, id ASC
+                """,
+                (owner_telegram_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    def get_active_profile_id(owner_telegram_id: int) -> Optional[int]:
+        with BookingDatabase._connect() as conn:
+            row = conn.execute(
+                "SELECT active_master_id FROM owner_active_profile WHERE owner_telegram_id = ?",
+                (owner_telegram_id,),
+            ).fetchone()
+            return row["active_master_id"] if row and row["active_master_id"] is not None else None
+
+    @staticmethod
+    def set_active_profile_id(owner_telegram_id: int, master_id: Optional[int]) -> None:
+        with BookingDatabase._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO owner_active_profile (owner_telegram_id, active_master_id)
+                VALUES (?, ?)
+                ON CONFLICT(owner_telegram_id) DO UPDATE SET active_master_id = excluded.active_master_id
+                """,
+                (owner_telegram_id, master_id),
+            )
+
+    @staticmethod
+    def get_master_owner(master_id: int) -> Optional[int]:
+        with BookingDatabase._connect() as conn:
+            row = conn.execute(
+                "SELECT owner_telegram_id FROM masters WHERE id = ?",
+                (master_id,),
+            ).fetchone()
+            return row["owner_telegram_id"] if row else None
+
+    @staticmethod
+    def deactivate_master_profile(master_id: int, owner_telegram_id: int) -> bool:
+        with BookingDatabase._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE masters SET is_active = 0, updated_at = ? WHERE id = ? AND owner_telegram_id = ?",
+                (_utc_now_str(), master_id, owner_telegram_id),
+            )
+            return cursor.rowcount > 0
+
+    @staticmethod
+    def reactivate_master_profile(master_id: int, owner_telegram_id: int) -> bool:
+        with BookingDatabase._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE masters SET is_active = 1, updated_at = ? WHERE id = ? AND owner_telegram_id = ?",
+                (_utc_now_str(), master_id, owner_telegram_id),
+            )
+            return cursor.rowcount > 0
+
+    @staticmethod
     def upsert_master_profile(
-        master_telegram_id: int,
+        owner_telegram_id: int,
         master_name: str,
         services: list[str],
         schedule: list[str],
@@ -907,43 +1059,58 @@ class BookingDatabase:
         is_active: bool = True,
         duration_minutes: int = 60,
         card_number: Optional[str] = None,
-    ) -> bool:
+        master_id: Optional[int] = None,
+    ) -> Optional[int]:
         encrypted_card_number = _encrypt_card_number(card_number)
-        payload = (
-            master_telegram_id,
-            master_name,
-            json.dumps(services, ensure_ascii=False),
-            json.dumps(schedule, ensure_ascii=False),
-            greeting_text,
-            1 if is_active else 0,
-            duration_minutes,
-            encrypted_card_number,
-            _utc_now_str(),
-            _utc_now_str(),
-        )
 
         with BookingDatabase._connect() as conn:
             cursor = conn.cursor()
+            if master_id is not None:
+                cursor.execute(
+                    """
+                    UPDATE masters
+                    SET master_name = ?, services_json = ?, schedule_json = ?, greeting_text = ?,
+                        is_active = ?, duration_minutes = ?, card_number = COALESCE(?, card_number),
+                        updated_at = ?
+                    WHERE id = ? AND owner_telegram_id = ?
+                    """,
+                    (
+                        master_name,
+                        json.dumps(services, ensure_ascii=False),
+                        json.dumps(schedule, ensure_ascii=False),
+                        greeting_text,
+                        1 if is_active else 0,
+                        duration_minutes,
+                        encrypted_card_number,
+                        _utc_now_str(),
+                        master_id,
+                        owner_telegram_id,
+                    ),
+                )
+                return master_id if cursor.rowcount > 0 else None
+
             cursor.execute(
                 """
                 INSERT INTO masters (
-                    telegram_id, master_name, services_json, schedule_json,
+                    owner_telegram_id, master_name, services_json, schedule_json,
                     greeting_text, is_active, duration_minutes, card_number, created_at, updated_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(telegram_id) DO UPDATE SET
-                    master_name = excluded.master_name,
-                    services_json = excluded.services_json,
-                    schedule_json = excluded.schedule_json,
-                    greeting_text = excluded.greeting_text,
-                    is_active = excluded.is_active,
-                    duration_minutes = excluded.duration_minutes,
-                    card_number = COALESCE(excluded.card_number, masters.card_number),
-                    updated_at = excluded.updated_at
                 """,
-                payload,
+                (
+                    owner_telegram_id,
+                    master_name,
+                    json.dumps(services, ensure_ascii=False),
+                    json.dumps(schedule, ensure_ascii=False),
+                    greeting_text,
+                    1 if is_active else 0,
+                    duration_minutes,
+                    encrypted_card_number,
+                    _utc_now_str(),
+                    _utc_now_str(),
+                ),
             )
-        return True
+            return cursor.lastrowid
 
     @staticmethod
     def get_all_bookings() -> List[Tuple]:
