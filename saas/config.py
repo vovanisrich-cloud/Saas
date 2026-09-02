@@ -72,16 +72,17 @@ if not PAYMENT_WEBHOOK_SECRET or PAYMENT_WEBHOOK_SECRET == "wayforpay-webhook-se
         "PAYMENT_WEBHOOK_SECRET is not set. "
         "Set a unique webhook secret in your environment variables or .env file."
     )
-if not CARD_ENCRYPTION_KEY:
-    raise RuntimeError(
-        "CARD_ENCRYPTION_KEY is not set. "
-        "Generate a Fernet key and add it to CARD_ENCRYPTION_KEY in your environment or .env file."
+if CARD_ENCRYPTION_KEY:
+    try:
+        from cryptography.fernet import Fernet
+        Fernet(CARD_ENCRYPTION_KEY.encode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError("CARD_ENCRYPTION_KEY is invalid. Provide a valid Fernet base64-encoded key.") from exc
+else:
+    logger.warning(
+        "CARD_ENCRYPTION_KEY is not set. Falling back to plaintext card storage for this process. "
+        "Set CARD_ENCRYPTION_KEY in the environment or .env for encrypted storage in production."
     )
-try:
-    from cryptography.fernet import Fernet
-    Fernet(CARD_ENCRYPTION_KEY.encode("utf-8"))
-except Exception as exc:
-    raise RuntimeError("CARD_ENCRYPTION_KEY is invalid. Provide a valid Fernet base64-encoded key.") from exc
 if WAYFORPAY_DOMAIN_NAME.lower() == "localhost":
     logger.warning(
         "WAYFORPAY_DOMAIN_NAME is set to localhost. WayForPay usually expects the merchant domain configured in your store."
