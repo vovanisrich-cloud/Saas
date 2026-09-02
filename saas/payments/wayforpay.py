@@ -150,7 +150,7 @@ async def create_wayforpay_invoice(
                 WAYFORPAY_DOMAIN_NAME,
                 request_id,
                 str(order_date),
-                amount,
+                amount_value,
                 currency,
                 *product_names,
                 *product_counts,
