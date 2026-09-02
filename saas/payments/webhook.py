@@ -12,13 +12,7 @@ async def process_payment_status(bot, order_reference: str, source: str) -> dict
     """Process payment status update from WayForPay."""
     from .wayforpay import verify_wayforpay_signature, fetch_wayforpay_invoice_status, build_wayforpay_status_signature
     from saas.notifications import notify_booking_confirmed, notify_master
-    from saas.handlers.subscription import handle_subscription_webhook
     from database import BookingDatabase
-
-    if order_reference.startswith("sub_"):
-        if bot:
-            await handle_subscription_webhook(bot, order_reference)
-        return {"ok": True, "status": "approved", "reason": "subscription"}
 
     pending = BookingDatabase.get_pending_payment_by_request(order_reference)
     if not pending:
@@ -63,12 +57,12 @@ async def complete_booking_after_payment(bot, pending: dict, *, transfer_payout:
         return booking_id
 
     if transfer_payout:
-        await transfer_wayforpay_to_master_card(pending)
-    await notify_booking_confirmed(bot, pending)
-    await notify_master(
-        bot,
-        pending.get("master_telegram_id"),
-        {
+        amount = int(pending.get("amount") or 0)
+        commission = round(amount * __import__("saas.config", fromlist=["PLATFORM_COMMISSION_PERCENT"]).PLATFORM_COMMISSION_PERCENT / 100)
+        master_amount = amount - commission
+        logger.info("Commission %s UAH kept, %s UAH sent to master", commission, master_amount)
+        await transfer_wayforpay_to_master_card(pending, amount=master_amount)
+        notify_payload = {
             "client_telegram_id": pending.get("user_id"),
             "full_name": pending.get("full_name"),
             "phone_number": pending.get("phone_number"),
@@ -78,8 +72,27 @@ async def complete_booking_after_payment(bot, pending: dict, *, transfer_payout:
             "payment_status": "paid",
             "booking_id": booking_id,
             "card_number": pending.get("card_number"),
-        },
-    )
+            "amount": amount,
+            "commission": commission,
+            "master_amount": master_amount,
+        }
+    else:
+        notify_payload = {
+            "client_telegram_id": pending.get("user_id"),
+            "full_name": pending.get("full_name"),
+            "phone_number": pending.get("phone_number"),
+            "service": pending.get("service"),
+            "booking_date": pending.get("booking_date"),
+            "booking_time": pending.get("booking_time"),
+            "payment_status": "paid",
+            "booking_id": booking_id,
+            "card_number": pending.get("card_number"),
+            "amount": int(pending.get("amount") or 0),
+            "commission": 0,
+            "master_amount": int(pending.get("amount") or 0),
+        }
+    await notify_booking_confirmed(bot, pending)
+    await notify_master(bot, pending.get("master_telegram_id"), notify_payload)
     return booking_id
 
 
@@ -87,7 +100,6 @@ async def wayforpay_service_url(request: web.Request, bot=None):
     """WayForPay webhook handler."""
     from .wayforpay import verify_wayforpay_signature, build_wayforpay_status_signature
     from saas.config import WAYFORPAY_DEBUG
-    from saas.handlers.subscription import handle_subscription_webhook
     from database import BookingDatabase
 
     try:
@@ -106,10 +118,7 @@ async def wayforpay_service_url(request: web.Request, bot=None):
     if not order_reference:
         return web.json_response({"error": "orderReference required"}, status=400)
 
-    if order_reference.startswith("sub_"):
-        if bot:
-            await handle_subscription_webhook(bot, order_reference)
-    elif transaction_status == "approved" and bot:
+    if transaction_status == "approved" and bot:
         await process_payment_status(bot, order_reference, source="webhook")
     else:
         BookingDatabase.mark_payment_status(order_reference, transaction_status or "processing")

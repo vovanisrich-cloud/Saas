@@ -236,7 +236,7 @@ async def create_wayforpay_invoice(
     return result
 
 
-async def transfer_wayforpay_to_master_card(pending: dict) -> None:
+async def transfer_wayforpay_to_master_card(pending: dict, amount: int | None = None) -> None:
     """Transfer payment to master's card via WayForPay."""
     from saas.config import WAYFORPAY_MERCHANT_ACCOUNT, WAYFORPAY_SECRET_KEY, DEPOSIT_AMOUNT_UAH
     from saas.utils import mask_card_last4
@@ -245,13 +245,14 @@ async def transfer_wayforpay_to_master_card(pending: dict) -> None:
     if not card_number:
         return
 
+    payout_amount = int(amount if amount is not None else (pending.get("amount") or DEPOSIT_AMOUNT_UAH))
     original_reference = str(pending.get("request_id") or pending.get("payment_invoice_id") or "")
     order_reference = f"payout_{original_reference}"
-    amount = format_wayforpay_amount(pending.get("amount") or DEPOSIT_AMOUNT_UAH)
+    amount_value = format_wayforpay_amount(payout_amount)
     currency = "UAH"
     order_date = int(time.time())
     signature_base = ";".join(
-        [WAYFORPAY_MERCHANT_ACCOUNT, order_reference, amount, currency, card_number]
+        [WAYFORPAY_MERCHANT_ACCOUNT, order_reference, amount_value, currency, card_number]
     )
     merchant_signature = hmac.new(
         WAYFORPAY_SECRET_KEY.encode("utf-8"),
@@ -263,7 +264,7 @@ async def transfer_wayforpay_to_master_card(pending: dict) -> None:
         "merchantAccount": WAYFORPAY_MERCHANT_ACCOUNT,
         "merchantSignature": merchant_signature,
         "cardNumber": card_number,
-        "amount": amount,
+        "amount": amount_value,
         "currency": currency,
         "orderReference": order_reference,
         "orderDate": order_date,

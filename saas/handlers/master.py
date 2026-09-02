@@ -5,7 +5,7 @@ from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 
-from ..config import SUBSCRIPTION_PRICE_UAH
+from ..config import PLATFORM_COMMISSION_PERCENT
 from ..states import MasterOnboardingStates
 from ..keyboards import (
     get_master_done_keyboard,
@@ -34,12 +34,11 @@ async def ask_master_duration(message: types.Message, state: FSMContext):
 @router.callback_query(F.data == "role_master")
 async def start_master_registration(callback: types.CallbackQuery, state: FSMContext):
     """Start master registration flow."""
-    trial_days = 14
     await safe_edit_text(
         callback.message,
         "Добре! Давай зареєструємо твій профіль майстра.\n\n"
-        f"⚠️ Пробний період: {trial_days} днів.\n"
-        f"Після нього підписка коштує {SUBSCRIPTION_PRICE_UAH} грн/місяць.\n\n"
+        f"⚠️ Комісія платформи: {PLATFORM_COMMISSION_PERCENT}% від передоплати.\n"
+        f"Майстер отримує {100 - PLATFORM_COMMISSION_PERCENT}% від суми.\n\n"
         "Напиши, будь ласка, своє ім'я 👤",
     )
     await state.set_state(MasterOnboardingStates.waiting_for_master_name)
@@ -233,7 +232,7 @@ async def start_master_card_update(callback: types.CallbackQuery, state: FSMCont
 
 @router.callback_query(F.data == "master_get_link")
 async def send_master_link(callback: types.CallbackQuery, state: FSMContext):
-    """Send master's booking link or redirect to subscription flow when access expired."""
+    """Send master's booking link."""
     data = await state.get_data()
     profile = data.get("master_profile")
     if not profile:
@@ -242,33 +241,10 @@ async def send_master_link(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer("Профіль не знайдено. Спочатку зареєструйтеся.", show_alert=True)
         return
 
-    BookingDatabase.start_trial_if_needed(callback.from_user.id)
-    status = BookingDatabase.get_subscription_status(callback.from_user.id)
-    if status.get("plan") == "expired":
-        keyboard = types.InlineKeyboardMarkup(
-            inline_keyboard=[[types.InlineKeyboardButton(text="💳 Оформити підписку", callback_data="master_subscribe")]]
-        )
-        await safe_edit_text(
-            callback.message,
-            "⛔️ Ваш пробний період закінчився.\n"
-            f"Оформіть підписку за {SUBSCRIPTION_PRICE_UAH} грн/місяць\n"
-            "щоб продовжити приймати записи.",
-            reply_markup=keyboard,
-        )
-        await callback.answer()
-        return
-
     link = f"https://t.me/bookme_beauty_bot?start=master_{callback.from_user.id}"
-    extra_line = ""
-    if status.get("plan") == "trial":
-        extra_line = f"\n⏳ Пробний період: залишилось {status.get('days_left', 0)} дн."
-    elif status.get("plan") == "paid":
-        paid_until = status.get("paid_until") or ""
-        extra_line = f"\n✅ Підписка активна ще до {paid_until}."
-
     await safe_edit_text(
         callback.message,
-        f"Ось твоє посилання для клієнтів:\n\n{link}{extra_line}\n\n"
+        f"Ось твоє посилання для клієнтів:\n\n{link}\n\n"
         "Надішли його клієнтам — вони потраплять безпосередньо до твого запису.",
         reply_markup=get_master_menu_keyboard(),
     )

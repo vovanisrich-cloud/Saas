@@ -68,9 +68,15 @@ async def notify_master(bot: Bot, master_telegram_id: int | None, booking_info: 
         f"🕒 <b>{booking_info['booking_time']}</b>\n"
         f"Статус оплати: <b>{booking_info.get('payment_status', 'paid')}</b>"
     )
+    amount = int(booking_info.get("amount") or 0)
+    commission = int(booking_info.get("commission") or 0)
+    master_amount = int(booking_info.get("master_amount") or (amount - commission))
     last4 = mask_card_last4(booking_info.get("card_number"))
     if last4:
-        message += f"\n💳 Передоплату буде переказано на вашу картку •••• {last4}"
+        message += (
+            f"\n💳 На вашу картку •••• {last4} переказано {master_amount} грн\n"
+            f"(передоплата {amount} грн мінус комісія сервісу {commission} грн)"
+        )
 
     try:
         await bot.send_message(master_telegram_id, message, parse_mode="HTML", reply_markup=reply_markup)
