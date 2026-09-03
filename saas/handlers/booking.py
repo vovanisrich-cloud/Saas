@@ -6,7 +6,7 @@ from aiogram import Router, types, F
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 
-from ..states import BeautyBookingStates
+from ..states import BeautyBookingStates, ClientRegistrationStates
 from ..keyboards import (
     get_phone_keyboard,
     get_services_keyboard,
@@ -97,15 +97,82 @@ async def get_master_welcome_text(profile: dict) -> str:
 
 @router.callback_query(F.data == "role_client")
 async def start_client_booking(callback: types.CallbackQuery, state: FSMContext):
-    """Start client booking flow."""
-    await safe_edit_text(
-        callback.message,
-        "Щоб записатися, скористайся персональним посиланням свого майстра — попроси його надіслати тобі посилання виду "
-        "t.me/<bot_username>?start=master_...\n"
-        "Якщо в тебе його ще немає, звернись до майстра.",
-    )
+    """Start standalone client self-registration flow."""
     await state.clear()
+    active = BookingDatabase.get_client_profile(callback.from_user.id)
+    if active:
+        await safe_edit_text(
+            callback.message,
+            f"✅ Ти вже зареєстрований як клієнт: {active['full_name']}, {active['phone_number']}.\n\n"
+            "Щоб записатися до майстра, перейди за його персональним "
+            "посиланням (t.me/<bot_username>?start=master_...).",
+            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="✏️ Оновити дані", callback_data="client_registration_edit")],
+            ]),
+        )
+        await callback.answer()
+        return
+
+    forgotten = BookingDatabase.get_forgotten_client_profile(callback.from_user.id)
+    if forgotten:
+        await safe_edit_text(
+            callback.message,
+            f"Раніше в тебе були збережені дані — {forgotten['full_name']}, "
+            f"{forgotten['phone_number']}.\n\nВідновити їх чи ввести нові?",
+            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="♻️ Відновити", callback_data="restore_client_profile")],
+                [types.InlineKeyboardButton(text="Ввести нові", callback_data="client_registration_edit")],
+            ]),
+        )
+        await callback.answer()
+        return
+
+    await safe_edit_text(callback.message, "Добре! Напиши, будь ласка, своє ім'я 👤", reply_markup=None)
+    await state.set_state(ClientRegistrationStates.waiting_for_name)
     await callback.answer()
+
+
+@router.callback_query(F.data == "client_registration_edit")
+async def client_registration_edit(callback: types.CallbackQuery, state: FSMContext):
+    """Restart client self-registration to overwrite saved data."""
+    await safe_edit_text(callback.message, "Напиши, будь ласка, своє ім'я 👤", reply_markup=None)
+    await state.set_state(ClientRegistrationStates.waiting_for_name)
+    await callback.answer()
+
+
+@router.message(ClientRegistrationStates.waiting_for_name, ~F.text.startswith("/"))
+async def process_client_registration_name(message: types.Message, state: FSMContext):
+    """Collect name for standalone client registration."""
+    full_name = (message.text or "").strip()
+    if not full_name:
+        await message.answer("Напишіть, будь ласка, ім'я та прізвище текстом.")
+        return
+    await state.update_data(full_name=full_name)
+    await message.answer("Тепер поділись номером телефону 📱", reply_markup=get_phone_keyboard())
+    await state.set_state(ClientRegistrationStates.waiting_for_phone)
+
+
+@router.message(ClientRegistrationStates.waiting_for_phone, F.contact)
+async def process_client_registration_phone(message: types.Message, state: FSMContext):
+    """Finish standalone client registration and save the profile."""
+    data = await state.get_data()
+    full_name = data.get("full_name", "")
+    phone_number = message.contact.phone_number
+    BookingDatabase.upsert_client_profile(message.from_user.id, full_name, phone_number)
+    await state.clear()
+    await message.answer(
+        f"✅ Готово! Зберегли тебе як {full_name}, {phone_number}.\n\n"
+        "Щоб записатися до майстра, перейди за його персональним "
+        "посиланням (t.me/<bot_username>?start=master_...).\n"
+        "Дані підставляться автоматично, вводити їх повторно не треба.",
+        reply_markup=types.ReplyKeyboardRemove(),
+    )
+
+
+@router.message(ClientRegistrationStates.waiting_for_phone, ~F.text.startswith("/"))
+async def client_registration_phone_fallback(message: types.Message):
+    """Handle non-contact messages during standalone registration phone step."""
+    await message.answer("Надішліть номер телефону через кнопку нижче 📱", reply_markup=get_phone_keyboard())
 
 
 @router.message(BeautyBookingStates.waiting_for_name, ~F.text.startswith("/"))
@@ -243,6 +310,19 @@ async def restore_client_profile_handler(callback: types.CallbackQuery, state: F
     profile = BookingDatabase.get_client_profile(callback.from_user.id)
     if not profile:
         await callback.answer("Не вдалося відновити дані.", show_alert=True)
+        return
+    data = await state.get_data()
+    if not data.get("service"):
+        await state.clear()
+        await safe_edit_text(
+            callback.message,
+            f"✅ Готово! Відновили тебе як {profile['full_name']}, {profile['phone_number']}.\n\n"
+            "Щоб записатися до майстра, перейди за його персональним "
+            "посиланням (t.me/<bot_username>?start=master_...).\n"
+            "Дані підставляться автоматично, вводити їх повторно не треба.",
+            reply_markup=None,
+        )
+        await callback.answer()
         return
     await state.update_data(
         full_name=profile["full_name"],

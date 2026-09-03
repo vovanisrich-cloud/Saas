@@ -13,6 +13,13 @@ class BeautyBookingStates(StatesGroup):
     waiting_for_time = State()
 
 
+class ClientRegistrationStates(StatesGroup):
+    """Standalone client self-registration (no master/service context yet)."""
+
+    waiting_for_name = State()
+    waiting_for_phone = State()
+
+
 class MasterOnboardingStates(StatesGroup):
     """Master registration and profile management states."""
 
