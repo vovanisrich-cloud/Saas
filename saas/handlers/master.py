@@ -61,7 +61,7 @@ async def start_master_registration(callback: types.CallbackQuery, state: FSMCon
     await callback.answer()
 
 
-@router.message(MasterOnboardingStates.waiting_for_master_name)
+@router.message(MasterOnboardingStates.waiting_for_master_name, ~F.text.startswith("/"))
 async def process_master_name(message: types.Message, state: FSMContext):
     """Process master name input."""
     master_name = (message.text or "").strip()
@@ -77,7 +77,7 @@ async def process_master_name(message: types.Message, state: FSMContext):
     await state.set_state(MasterOnboardingStates.waiting_for_service_input)
 
 
-@router.message(MasterOnboardingStates.waiting_for_service_input)
+@router.message(MasterOnboardingStates.waiting_for_service_input, ~F.text.startswith("/"))
 async def process_master_service_input(message: types.Message, state: FSMContext):
     """Process service input."""
     if message.text and message.text.strip().lower() in {"готово", "done", "закінчити", "завершити"}:
@@ -113,7 +113,7 @@ async def finish_master_services(callback: types.CallbackQuery, state: FSMContex
     await callback.answer()
 
 
-@router.message(MasterOnboardingStates.waiting_for_duration)
+@router.message(MasterOnboardingStates.waiting_for_duration, ~F.text.startswith("/"))
 async def process_master_duration(message: types.Message, state: FSMContext):
     """Process service duration input."""
     duration_text = (message.text or "").strip()
@@ -132,7 +132,7 @@ async def process_master_duration(message: types.Message, state: FSMContext):
     await state.set_state(MasterOnboardingStates.waiting_for_schedule)
 
 
-@router.message(MasterOnboardingStates.waiting_for_schedule)
+@router.message(MasterOnboardingStates.waiting_for_schedule, ~F.text.startswith("/"))
 async def process_master_schedule(message: types.Message, state: FSMContext):
     """Process schedule input."""
     schedule_text = (message.text or "").strip()
@@ -147,7 +147,7 @@ async def process_master_schedule(message: types.Message, state: FSMContext):
     await state.set_state(MasterOnboardingStates.waiting_for_card)
 
 
-@router.message(MasterOnboardingStates.waiting_for_card)
+@router.message(MasterOnboardingStates.waiting_for_card, ~F.text.startswith("/"))
 async def process_master_card(message: types.Message, state: FSMContext):
     """Process card number input."""
     card_number = normalize_card_number(message.text)

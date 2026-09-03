@@ -108,7 +108,7 @@ async def start_client_booking(callback: types.CallbackQuery, state: FSMContext)
     await callback.answer()
 
 
-@router.message(BeautyBookingStates.waiting_for_name)
+@router.message(BeautyBookingStates.waiting_for_name, ~F.text.startswith("/"))
 async def process_name(message: types.Message, state: FSMContext):
     """Process client name."""
     full_name = (message.text or "").strip()
@@ -129,7 +129,7 @@ async def process_phone(message: types.Message, state: FSMContext):
     await state.set_state(BeautyBookingStates.waiting_for_date)
 
 
-@router.message(BeautyBookingStates.waiting_for_phone)
+@router.message(BeautyBookingStates.waiting_for_phone, ~F.text.startswith("/"))
 async def process_phone_fallback(message: types.Message):
     """Handle non-contact messages during phone step."""
     await message.answer("Надішліть номер телефону через кнопку нижче 📱", reply_markup=get_phone_keyboard())
