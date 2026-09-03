@@ -153,6 +153,26 @@ async def process_service(callback: types.CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(service=service_name)
+    client_profile = BookingDatabase.get_client_profile(callback.from_user.id)
+    if client_profile:
+        await state.update_data(
+            full_name=client_profile["full_name"],
+            phone_number=client_profile["phone_number"],
+        )
+        await safe_edit_text(
+            callback.message,
+            "Використати збережені дані — "
+            f"{client_profile['full_name']}, {client_profile['phone_number']}?",
+            reply_markup=types.InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [types.InlineKeyboardButton(text="Так, це я", callback_data="use_saved_client_profile")],
+                    [types.InlineKeyboardButton(text="Ні, ввести заново", callback_data="edit_client_profile")],
+                ]
+            ),
+        )
+        await callback.answer()
+        return
+
     await safe_edit_text(
         callback.message,
         f"Послуга обрана: <b>{service_name}</b>\n\nТепер напишіть своє ім'я.",
@@ -161,6 +181,26 @@ async def process_service(callback: types.CallbackQuery, state: FSMContext):
     )
     await callback.answer()
     await state.set_state(BeautyBookingStates.waiting_for_name)
+
+
+@router.callback_query(F.data == "use_saved_client_profile")
+async def use_saved_client_profile(callback: types.CallbackQuery, state: FSMContext):
+    """Use the saved client profile for this booking."""
+    await safe_edit_text(
+        callback.message,
+        "Оберіть дату запису 📅",
+        reply_markup=get_date_calendar_keyboard(),
+    )
+    await state.set_state(BeautyBookingStates.waiting_for_date)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "edit_client_profile")
+async def edit_client_profile(callback: types.CallbackQuery, state: FSMContext):
+    """Restart client details input for this booking."""
+    await safe_edit_text(callback.message, "Тепер напишіть своє ім'я.", reply_markup=None)
+    await state.set_state(BeautyBookingStates.waiting_for_name)
+    await callback.answer()
 
 
 @router.callback_query(BeautyBookingStates.waiting_for_date, F.data.startswith("date_"))

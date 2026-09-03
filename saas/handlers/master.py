@@ -23,6 +23,20 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 
+@router.callback_query(F.data == "switch_to_client_mode")
+async def switch_to_client_mode(callback: types.CallbackQuery, state: FSMContext):
+    """Explain how to open a master's booking flow as a client."""
+    await state.clear()
+    await safe_edit_text(
+        callback.message,
+        "Щоб записатися до майстра, перейди за його персональним "
+        "посиланням (t.me/<bot_username>?start=master_...).\n\n"
+        "Якщо в тебе вже є збережені дані як клієнта — вони "
+        "підставляться автоматично при переході.",
+    )
+    await callback.answer()
+
+
 async def ask_master_duration(message: types.Message, state: FSMContext):
     """Prompt for service duration."""
     await message.answer(

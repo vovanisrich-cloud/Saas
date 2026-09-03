@@ -104,6 +104,7 @@ def get_master_menu_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="💳 Змінити картку", callback_data="master_set_card")],
             [InlineKeyboardButton(text="Мій профіль", callback_data="master_view_profile")],
             [InlineKeyboardButton(text="🔄 Мої профілі", callback_data="master_my_profiles")],
+            [InlineKeyboardButton(text="📱 Записатися як клієнт", callback_data="switch_to_client_mode")],
             [InlineKeyboardButton(text="🚪 Вийти з профілю", callback_data="master_logout")],
         ]
     )

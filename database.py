@@ -231,6 +231,16 @@ class BookingDatabase:
                 )
                 """
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS client_profiles (
+                    telegram_id INTEGER PRIMARY KEY,
+                    full_name TEXT,
+                    phone_number TEXT,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
             for legacy_owner_id, profile_id in legacy_master_ids.items():
                 cursor.execute(
                     """
@@ -842,6 +852,11 @@ class BookingDatabase:
                 )
 
                 conn.commit()
+            BookingDatabase.upsert_client_profile(
+                pending["user_id"],
+                pending["full_name"],
+                pending["phone_number"],
+            )
             return booking_id
         except sqlite3.IntegrityError:
             with BookingDatabase._connect() as conn:
@@ -927,9 +942,43 @@ class BookingDatabase:
                         payment_confirmed_at,
                     ),
                 )
+            BookingDatabase.upsert_client_profile(user_id, full_name, phone_number)
             return True
         except sqlite3.IntegrityError:
             return False
+
+    @staticmethod
+    def get_client_profile(telegram_id: int) -> Optional[dict]:
+        """Return the saved client name and phone number, if available."""
+        with BookingDatabase._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT full_name, phone_number
+                FROM client_profiles
+                WHERE telegram_id = ?
+                """,
+                (telegram_id,),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    @staticmethod
+    def upsert_client_profile(telegram_id: int, full_name: str, phone_number: str) -> None:
+        """Insert or update the saved client profile."""
+        with BookingDatabase._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO client_profiles (telegram_id, full_name, phone_number, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(telegram_id) DO UPDATE SET
+                    full_name = excluded.full_name,
+                    phone_number = excluded.phone_number,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (telegram_id, full_name, phone_number),
+            )
+
 
     @staticmethod
     def get_booking_by_slot(
