@@ -232,7 +232,7 @@ async def process_phone_fallback(message: types.Message):
     await message.answer("Надішліть номер телефону через кнопку нижче 📱", reply_markup=get_phone_keyboard())
 
 
-@router.callback_query(BeautyBookingStates.waiting_for_service)
+@router.callback_query(BeautyBookingStates.waiting_for_service, F.data.startswith("master_service:"))
 async def process_service(callback: types.CallbackQuery, state: FSMContext):
     """Process service selection."""
     user_data = await state.get_data()
