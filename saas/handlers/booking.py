@@ -108,6 +108,7 @@ async def start_client_booking(callback: types.CallbackQuery, state: FSMContext)
             "посиланням (t.me/<bot_username>?start=master_...).",
             reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
                 [types.InlineKeyboardButton(text="✏️ Оновити дані", callback_data="client_registration_edit")],
+                [types.InlineKeyboardButton(text="❌ Видалити профіль", callback_data="client_delete_confirm")],
             ]),
         )
         await callback.answer()
@@ -129,6 +130,35 @@ async def start_client_booking(callback: types.CallbackQuery, state: FSMContext)
 
     await safe_edit_text(callback.message, "Добре! Напиши, будь ласка, своє ім'я 👤", reply_markup=None)
     await state.set_state(ClientRegistrationStates.waiting_for_name)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "client_delete_confirm")
+async def confirm_delete_client(callback: types.CallbackQuery, state: FSMContext):
+    """Ask for confirmation before permanently deleting client data."""
+    await safe_edit_text(
+        callback.message,
+        "⚠️ Видалити твої збережені дані (ім'я, телефон) НАЗАВЖДИ?\n\n"
+        "Історія попередніх бронювань залишиться в базі, але автопідстановка "
+        "даних більше працювати не буде. Це незворотньо.",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="❌ Так, видалити", callback_data="client_delete_do")],
+            [types.InlineKeyboardButton(text="Скасувати", callback_data="role_client")],
+        ]),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "client_delete_do")
+async def do_delete_client(callback: types.CallbackQuery, state: FSMContext):
+    """Permanently delete the current client profile."""
+    BookingDatabase.delete_client_profile(callback.from_user.id)
+    await state.clear()
+    await safe_edit_text(
+        callback.message,
+        "🗑 Дані видалено.",
+        reply_markup=get_role_selection_keyboard(),
+    )
     await callback.answer()
 
 

@@ -324,6 +324,10 @@ async def show_my_profiles(callback: types.CallbackQuery, state: FSMContext):
             types.InlineKeyboardButton(
                 text=f"{'✅' if profile['is_active'] else '💤'} {profile['master_name']}",
                 callback_data=f"master_switch_to:{profile['id']}",
+            ),
+            types.InlineKeyboardButton(
+                text="🗑",
+                callback_data=f"master_delete_confirm:{profile['id']}",
             )
         ]
         for profile in profiles
@@ -382,6 +386,52 @@ async def cmd_profiles(message: types.Message, state: FSMContext):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
     )
     await state.clear()
+
+
+@router.callback_query(F.data.startswith("master_delete_confirm:"))
+async def confirm_delete_master(callback: types.CallbackQuery, state: FSMContext):
+    """Ask for confirmation before permanently deleting a master profile."""
+    try:
+        master_id = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("Профіль не знайдено.", show_alert=True)
+        return
+    profile = BookingDatabase.get_master_profile_by_id(master_id)
+    if not profile or profile["owner_telegram_id"] != callback.from_user.id:
+        await callback.answer("Профіль не знайдено.", show_alert=True)
+        return
+    await safe_edit_text(
+        callback.message,
+        f"⚠️ Видалити профіль «{profile['master_name']}» НАЗАВЖДИ?\n\n"
+        "Історія бронювань залишиться в базі, але сам профіль і "
+        "посилання на нього перестануть працювати. Це незворотньо.",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="❌ Так, видалити", callback_data=f"master_delete_do:{master_id}")],
+            [types.InlineKeyboardButton(text="Скасувати", callback_data="master_my_profiles")],
+        ]),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("master_delete_do:"))
+async def do_delete_master(callback: types.CallbackQuery, state: FSMContext):
+    """Permanently delete a master profile after confirmation."""
+    try:
+        master_id = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("Профіль не знайдено.", show_alert=True)
+        return
+    deleted = BookingDatabase.delete_master_profile(master_id, callback.from_user.id)
+    if not deleted:
+        await callback.answer("Не вдалося видалити (профіль не знайдено).", show_alert=True)
+        return
+    await state.clear()
+    await safe_edit_text(
+        callback.message,
+        "🗑 Профіль видалено.",
+        reply_markup=get_role_selection_keyboard(include_profiles=True),
+    )
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("master_switch_to:"))

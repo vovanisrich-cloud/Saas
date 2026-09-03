@@ -1023,6 +1023,17 @@ class BookingDatabase:
             )
             return cursor.rowcount > 0
 
+    @staticmethod
+    def delete_client_profile(telegram_id: int) -> bool:
+        """Permanently delete a client profile without touching bookings."""
+        with BookingDatabase._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM client_profiles WHERE telegram_id = ?",
+                (telegram_id,),
+            )
+            return cursor.rowcount > 0
+
 
     @staticmethod
     def get_booking_by_slot(
@@ -1074,6 +1085,43 @@ class BookingDatabase:
             profile["services"] = json.loads(profile.get("services_json") or "[]")
             profile["schedule"] = json.loads(profile.get("schedule_json") or "[]")
             return profile
+
+    @staticmethod
+    def delete_master_profile(master_id: int, owner_telegram_id: int) -> bool:
+        """Permanently delete an owned master profile and expire its holds."""
+        now = _utc_now_str()
+        with BookingDatabase._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN")
+            cursor.execute(
+                """
+                DELETE FROM masters
+                WHERE id = ? AND owner_telegram_id = ?
+                """,
+                (master_id, owner_telegram_id),
+            )
+            if cursor.rowcount == 0:
+                conn.rollback()
+                return False
+            cursor.execute(
+                """
+                UPDATE pending_payments
+                SET status = 'expired', updated_at = ?
+                WHERE master_telegram_id = ?
+                  AND status IN ('creating', 'pending_payment', 'processing')
+                """,
+                (now, master_id),
+            )
+            cursor.execute(
+                """
+                UPDATE owner_active_profile
+                SET active_master_id = NULL
+                WHERE owner_telegram_id = ? AND active_master_id = ?
+                """,
+                (owner_telegram_id, master_id),
+            )
+            conn.commit()
+            return True
 
     @staticmethod
     def get_master_profile(master_id: int) -> Optional[dict]:
