@@ -2,6 +2,7 @@
 
 import logging
 from aiogram import Router, types, F
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 
@@ -325,6 +326,48 @@ async def show_my_profiles(callback: types.CallbackQuery, state: FSMContext):
         reply_markup=types.InlineKeyboardMarkup(inline_keyboard=buttons),
     )
     await callback.answer()
+
+
+@router.message(Command("profiles"))
+async def cmd_profiles(message: types.Message, state: FSMContext):
+    """Швидкий доступ до списку профілів через команду /profiles."""
+    profiles = BookingDatabase.get_master_profiles_by_owner(message.from_user.id)
+
+    if not profiles:
+        await message.answer(
+            "У вас ще немає жодного профілю майстра.\n\n"
+            "Щоб зареєструватись — натисни /start і обери «Я майстер»."
+        )
+        return
+
+    active_id = BookingDatabase.get_active_profile_id(message.from_user.id)
+
+    lines = ["📋 Твої профілі:\n"]
+    keyboard_rows = []
+    for profile in profiles:
+        is_current = profile["id"] == active_id
+        status_icon = "✅" if is_current else ("💤" if not profile["is_active"] else "⚪️")
+        marker = " (поточний)" if is_current else ""
+        lines.append(f"{status_icon} {profile['master_name']}{marker}")
+        keyboard_rows.append([
+            InlineKeyboardButton(
+                text=(
+                    f"Перемкнутись на «{profile['master_name']}»"
+                    if not is_current
+                    else f"✅ {profile['master_name']} (поточний)"
+                ),
+                callback_data=f"master_switch_to:{profile['id']}",
+            )
+        ])
+    keyboard_rows.append([
+        InlineKeyboardButton(text="➕ Зареєструвати новий профіль", callback_data="role_master")
+    ])
+
+    await message.answer(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
+    )
+    await state.clear()
 
 
 @router.callback_query(F.data.startswith("master_switch_to:"))
