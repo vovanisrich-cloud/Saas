@@ -58,6 +58,12 @@ async def main():
     """Main bot function."""
     bot_info = await bot.get_me()
     app_config.BOT_USERNAME = bot_info.username or ""
+    from aiogram.types import BotCommand
+
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Почати / головне меню"),
+        BotCommand(command="profiles", description="Мої профілі майстра"),
+    ])
     logger.info("Bot is starting as @%s", app_config.BOT_USERNAME or "unknown")
 
     # Start web server for webhooks
