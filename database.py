@@ -241,6 +241,11 @@ class BookingDatabase:
                 )
                 """
             )
+            BookingDatabase._ensure_columns(
+                cursor,
+                "client_profiles",
+                {"is_active": "INTEGER NOT NULL DEFAULT 1"},
+            )
             for legacy_owner_id, profile_id in legacy_master_ids.items():
                 cursor.execute(
                     """
@@ -956,7 +961,7 @@ class BookingDatabase:
                 """
                 SELECT full_name, phone_number
                 FROM client_profiles
-                WHERE telegram_id = ?
+                WHERE telegram_id = ? AND is_active = 1
                 """,
                 (telegram_id,),
             )
@@ -974,10 +979,49 @@ class BookingDatabase:
                 ON CONFLICT(telegram_id) DO UPDATE SET
                     full_name = excluded.full_name,
                     phone_number = excluded.phone_number,
+                    is_active = 1,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (telegram_id, full_name, phone_number),
             )
+
+    @staticmethod
+    def forget_client_profile(telegram_id: int) -> bool:
+        """Mark the client profile as forgotten without deleting its data."""
+        with BookingDatabase._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE client_profiles SET is_active = 0 WHERE telegram_id = ?",
+                (telegram_id,),
+            )
+            return cursor.rowcount > 0
+
+    @staticmethod
+    def get_forgotten_client_profile(telegram_id: int) -> Optional[dict]:
+        """Return a forgotten client profile, if one exists."""
+        with BookingDatabase._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT full_name, phone_number
+                FROM client_profiles
+                WHERE telegram_id = ? AND is_active = 0
+                """,
+                (telegram_id,),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    @staticmethod
+    def restore_client_profile(telegram_id: int) -> bool:
+        """Restore a forgotten client profile without changing its data."""
+        with BookingDatabase._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE client_profiles SET is_active = 1 WHERE telegram_id = ?",
+                (telegram_id,),
+            )
+            return cursor.rowcount > 0
 
 
     @staticmethod

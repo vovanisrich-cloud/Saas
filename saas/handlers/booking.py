@@ -167,6 +167,24 @@ async def process_service(callback: types.CallbackQuery, state: FSMContext):
                 inline_keyboard=[
                     [types.InlineKeyboardButton(text="Так, це я", callback_data="use_saved_client_profile")],
                     [types.InlineKeyboardButton(text="Ні, ввести заново", callback_data="edit_client_profile")],
+                    [types.InlineKeyboardButton(text="🗑 Забути мої дані", callback_data="forget_client_profile")],
+                ]
+            ),
+        )
+        await callback.answer()
+        return
+
+    forgotten = BookingDatabase.get_forgotten_client_profile(callback.from_user.id)
+    if forgotten:
+        await safe_edit_text(
+            callback.message,
+            "Раніше в тебе були збережені дані — "
+            f"{forgotten['full_name']}, {forgotten['phone_number']}.\n\n"
+            "Відновити їх чи ввести нові?",
+            reply_markup=types.InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [types.InlineKeyboardButton(text="♻️ Відновити", callback_data="restore_client_profile")],
+                    [types.InlineKeyboardButton(text="Ввести нові", callback_data="edit_client_profile")],
                 ]
             ),
         )
@@ -200,6 +218,42 @@ async def edit_client_profile(callback: types.CallbackQuery, state: FSMContext):
     """Restart client details input for this booking."""
     await safe_edit_text(callback.message, "Тепер напишіть своє ім'я.", reply_markup=None)
     await state.set_state(BeautyBookingStates.waiting_for_name)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "forget_client_profile")
+async def forget_client_profile_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Forget the saved client profile without deleting its data."""
+    BookingDatabase.forget_client_profile(callback.from_user.id)
+    await safe_edit_text(
+        callback.message,
+        "Дані забуті 🗑 Наступного разу введеш їх заново — "
+        "або відновиш ті самі, якщо не встигнеш забути номер напам'ять 😉\n\n"
+        "Тепер напишіть своє ім'я.",
+        reply_markup=None,
+    )
+    await state.set_state(BeautyBookingStates.waiting_for_name)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "restore_client_profile")
+async def restore_client_profile_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Restore and use the forgotten client profile."""
+    BookingDatabase.restore_client_profile(callback.from_user.id)
+    profile = BookingDatabase.get_client_profile(callback.from_user.id)
+    if not profile:
+        await callback.answer("Не вдалося відновити дані.", show_alert=True)
+        return
+    await state.update_data(
+        full_name=profile["full_name"],
+        phone_number=profile["phone_number"],
+    )
+    await safe_edit_text(
+        callback.message,
+        "Оберіть дату запису 📅",
+        reply_markup=get_date_calendar_keyboard(),
+    )
+    await state.set_state(BeautyBookingStates.waiting_for_date)
     await callback.answer()
 
 
