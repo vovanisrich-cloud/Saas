@@ -332,6 +332,29 @@ async def show_my_profiles(callback: types.CallbackQuery, state: FSMContext):
         ]
         for profile in profiles
     ]
+    client_active = BookingDatabase.get_client_profile(callback.from_user.id)
+    client_forgotten = None
+    if not client_active:
+        client_forgotten = BookingDatabase.get_forgotten_client_profile(callback.from_user.id)
+    if client_active:
+        buttons.append([
+            types.InlineKeyboardButton(
+                text=f"✅ {client_active['full_name']} (клієнт)",
+                callback_data="role_client",
+            ),
+            types.InlineKeyboardButton(text="🗑", callback_data="client_delete_confirm"),
+        ])
+    elif client_forgotten:
+        buttons.append([
+            types.InlineKeyboardButton(
+                text=f"💤 {client_forgotten['full_name']} (клієнт, забуто)",
+                callback_data="restore_client_profile",
+            ),
+        ])
+    else:
+        buttons.append([
+            types.InlineKeyboardButton(text="➕ Зареєструвати як клієнт", callback_data="role_client"),
+        ])
     buttons.extend(
         [
             [types.InlineKeyboardButton(text="➕ Зареєструвати новий профіль", callback_data="role_master")],
@@ -340,7 +363,7 @@ async def show_my_profiles(callback: types.CallbackQuery, state: FSMContext):
     )
     await safe_edit_text(
         callback.message,
-        "Оберіть профіль майстра:",
+        "Оберіть профіль:",
         reply_markup=types.InlineKeyboardMarkup(inline_keyboard=buttons),
     )
     await callback.answer()
