@@ -60,6 +60,24 @@ def _utc_now_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _normalize_services(services) -> list[dict]:
+    """Return services in the current shape while reading legacy strings safely."""
+    from saas.config import DEPOSIT_AMOUNT_UAH
+
+    normalized = []
+    for service in services or []:
+        if isinstance(service, dict):
+            name = str(service.get("name") or "").strip()
+            try:
+                price = int(service.get("price"))
+            except (TypeError, ValueError):
+                price = DEPOSIT_AMOUNT_UAH
+            normalized.append({"name": name, "price": price if price > 0 else DEPOSIT_AMOUNT_UAH})
+        elif str(service).strip():
+            normalized.append({"name": str(service).strip(), "price": DEPOSIT_AMOUNT_UAH})
+    return normalized
+
+
 class BookingDatabase:
     """SQLite layer for confirmed bookings and pending payment reservations."""
 
@@ -95,6 +113,7 @@ class BookingDatabase:
                     payment_invoice_id TEXT,
                     payment_provider TEXT DEFAULT 'wayforpay',
                     payment_amount INTEGER DEFAULT 200,
+                    service_price INTEGER DEFAULT 200,
                     payment_confirmed_at TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(booking_date, booking_time)
@@ -110,6 +129,7 @@ class BookingDatabase:
                     "payment_invoice_id": "TEXT",
                     "payment_provider": "TEXT",
                     "payment_amount": "INTEGER",
+                    "service_price": "INTEGER",
                     "payment_confirmed_at": "TEXT",
                 },
             )
@@ -133,6 +153,7 @@ class BookingDatabase:
                     payment_invoice_id TEXT UNIQUE,
                     payment_page_url TEXT,
                     amount INTEGER NOT NULL DEFAULT 200,
+                    service_price INTEGER NOT NULL DEFAULT 200,
                     status TEXT NOT NULL DEFAULT 'creating',
                     expires_at TEXT NOT NULL,
                     booking_id INTEGER,
@@ -151,6 +172,7 @@ class BookingDatabase:
                     "payment_invoice_id": "TEXT",
                     "payment_page_url": "TEXT",
                     "amount": "INTEGER",
+                    "service_price": "INTEGER",
                     "status": "TEXT",
                     "expires_at": "TEXT",
                     "booking_id": "INTEGER",
@@ -343,6 +365,7 @@ class BookingDatabase:
                 payment_invoice_id TEXT,
                 payment_provider TEXT DEFAULT 'wayforpay',
                 payment_amount INTEGER DEFAULT 200,
+                service_price INTEGER DEFAULT 200,
                 payment_confirmed_at TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(master_telegram_id, booking_date, booking_time)
@@ -355,11 +378,13 @@ class BookingDatabase:
                 id, user_id, master_telegram_id, full_name, phone_number, service,
                 booking_date, booking_time, payment_invoice_id, payment_provider,
                 payment_amount, payment_confirmed_at, created_at
+                , service_price
             )
             SELECT
                 id, user_id, COALESCE(master_telegram_id, 0), full_name, phone_number, service,
                 booking_date, booking_time, payment_invoice_id, payment_provider,
                 payment_amount, payment_confirmed_at, created_at
+                , payment_amount
             FROM bookings_old
             """
         )
@@ -546,6 +571,7 @@ class BookingDatabase:
         request_id: Optional[str] = None,
         expires_at: Optional[str] = None,
         master_telegram_id: int = 0,
+        service_price: Optional[int] = None,
     ) -> Optional[str]:
         """Create a temporary hold for a slot before the payment is created."""
         from saas.config import RESERVATION_TTL_MINUTES
@@ -557,6 +583,7 @@ class BookingDatabase:
                 "%Y-%m-%d %H:%M:%S"
             )
         master_telegram_id = master_telegram_id or 0
+        amount = int(service_price or amount)
 
         try:
             with BookingDatabase._connect() as conn:
@@ -578,10 +605,10 @@ class BookingDatabase:
                     """
                     INSERT INTO pending_payments (
                         request_id, user_id, master_telegram_id, full_name, phone_number, service,
-                        booking_date, booking_time, payment_provider, amount,
+                        booking_date, booking_time, payment_provider, amount, service_price,
                         status, expires_at, created_at, updated_at, card_number
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', ?, ?, ?, ?)
                     """,
                     (
                         request_id,
@@ -593,6 +620,7 @@ class BookingDatabase:
                         booking_date,
                         booking_time,
                         provider,
+                        amount,
                         amount,
                         expires_at,
                         _utc_now_str(),
@@ -691,14 +719,15 @@ class BookingDatabase:
                     "CAST(booking_id AS TEXT) = ?",
                 ]
                 params: list[str] = [raw, raw, token, token]
+                where_clause = f"({' OR '.join(conditions)})"
                 if user_id is not None and not allow_other_users:
-                    conditions.append("user_id = ?")
+                    where_clause += " AND user_id = ?"
                     params.append(str(user_id))
                 cursor.execute(
                     f"""
                     SELECT *
                     FROM pending_payments
-                    WHERE {' OR '.join(conditions)}
+                    WHERE {where_clause}
                     ORDER BY datetime(created_at) DESC, id DESC
                     LIMIT 1
                     """,
@@ -822,6 +851,7 @@ class BookingDatabase:
             invoice_key,
             pending["payment_provider"],
             pending["amount"],
+            pending.get("service_price") or pending["amount"],
             _utc_now_str(),
         )
 
@@ -835,9 +865,9 @@ class BookingDatabase:
                     INSERT INTO bookings (
                         user_id, master_telegram_id, full_name, phone_number, service,
                         booking_date, booking_time, payment_invoice_id,
-                        payment_provider, payment_amount, payment_confirmed_at
+                        payment_provider, payment_amount, service_price, payment_confirmed_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     booking_payload,
                 )
@@ -914,6 +944,7 @@ class BookingDatabase:
         payment_invoice_id: Optional[str] = None,
         payment_provider: str = "wayforpay",
         payment_amount: int = 200,
+        service_price: Optional[int] = None,
         payment_confirmed_at: Optional[str] = None,
         master_telegram_id: int = 0,
     ) -> bool:
@@ -929,9 +960,9 @@ class BookingDatabase:
                     INSERT INTO bookings (
                         user_id, master_telegram_id, full_name, phone_number, service,
                         booking_date, booking_time, payment_invoice_id,
-                        payment_provider, payment_amount, payment_confirmed_at
+                        payment_provider, payment_amount, service_price, payment_confirmed_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         user_id,
@@ -944,6 +975,7 @@ class BookingDatabase:
                         payment_invoice_id,
                         payment_provider,
                         payment_amount,
+                        service_price or payment_amount,
                         payment_confirmed_at,
                     ),
                 )
@@ -1082,7 +1114,7 @@ class BookingDatabase:
 
             profile = dict(row)
             profile["card_number"] = _decrypt_card_number(profile.get("card_number"))
-            profile["services"] = json.loads(profile.get("services_json") or "[]")
+            profile["services"] = _normalize_services(json.loads(profile.get("services_json") or "[]"))
             profile["schedule"] = json.loads(profile.get("schedule_json") or "[]")
             return profile
 
@@ -1194,7 +1226,7 @@ class BookingDatabase:
     def upsert_master_profile(
         owner_telegram_id: int,
         master_name: str,
-        services: list[str],
+        services: list[dict],
         schedule: list[str],
         greeting_text: Optional[str] = None,
         is_active: bool = True,
@@ -1217,7 +1249,7 @@ class BookingDatabase:
                     """,
                     (
                         master_name,
-                        json.dumps(services, ensure_ascii=False),
+                        json.dumps(_normalize_services(services), ensure_ascii=False),
                         json.dumps(schedule, ensure_ascii=False),
                         greeting_text,
                         1 if is_active else 0,
@@ -1241,7 +1273,7 @@ class BookingDatabase:
                 (
                     owner_telegram_id,
                     master_name,
-                    json.dumps(services, ensure_ascii=False),
+                    json.dumps(_normalize_services(services), ensure_ascii=False),
                     json.dumps(schedule, ensure_ascii=False),
                     greeting_text,
                     1 if is_active else 0,

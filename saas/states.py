@@ -25,6 +25,7 @@ class MasterOnboardingStates(StatesGroup):
 
     waiting_for_master_name = State()
     waiting_for_service_input = State()
+    waiting_for_service_price = State()
     waiting_for_duration = State()
     waiting_for_schedule = State()
     waiting_for_card = State()

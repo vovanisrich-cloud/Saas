@@ -70,7 +70,8 @@ async def process_master_name(message: types.Message, state: FSMContext):
         return
     await state.update_data(master_name=master_name, master_services=[])
     await message.answer(
-        "Додай послуги, які ти надаєш.\n\nФормат: <b>Назва — ціна</b>\nНаприклад: <b>Манікюр — 300 грн</b>\n\nМожеш надсилати по одній послузі за раз.\nКоли закінчиш — натисни кнопку <b>Готово</b> або напиши <b>готово</b> текстом.",
+        "Додай назви послуг по одній за раз. Після кожної назви я запитаю ціну в гривнях.\n\n"
+        "Коли закінчиш — натисни кнопку <b>Готово</b> або напиши <b>готово</b> текстом.",
         reply_markup=get_master_done_keyboard(),
         parse_mode="HTML",
     )
@@ -96,9 +97,24 @@ async def process_master_service_input(message: types.Message, state: FSMContext
 
     data = await state.get_data()
     services = list(data.get("master_services", []))
-    services.append(service)
-    await state.update_data(master_services=services)
-    await message.answer(f"Додано: {service}\nНадсилай наступну, натисни <b>Готово</b> або напиши <b>готово</b> ✅", parse_mode="HTML")
+    await state.update_data(pending_service_name=service)
+    await message.answer(f"Яка ціна послуги «{service}» у грн? Введи позитивне ціле число.")
+    await state.set_state(MasterOnboardingStates.waiting_for_service_price)
+
+
+@router.message(MasterOnboardingStates.waiting_for_service_price, ~F.text.startswith("/"))
+async def process_master_service_price(message: types.Message, state: FSMContext):
+    """Process the price for the previously entered service."""
+    price_text = (message.text or "").strip()
+    if not price_text.isdigit() or int(price_text) <= 0:
+        await message.answer("Ціна має бути позитивним цілим числом у гривнях.")
+        return
+    data = await state.get_data()
+    services = list(data.get("master_services", []))
+    services.append({"name": data.get("pending_service_name", "Послуга"), "price": int(price_text)})
+    await state.update_data(master_services=services, pending_service_name=None)
+    await message.answer("Послугу додано. Надсилай наступну назву або натисни <b>Готово</b> ✅", parse_mode="HTML")
+    await state.set_state(MasterOnboardingStates.waiting_for_service_input)
 
 
 @router.callback_query(MasterOnboardingStates.waiting_for_service_input, F.data == "master_services_done")
@@ -298,7 +314,10 @@ async def view_master_profile(callback: types.CallbackQuery, state: FSMContext):
         f"⏱ Тривалість: <b>{duration_minutes} хв</b>\n"
         f"{card_line}"
         f"💅 Послуги:\n"
-        + "\n".join(f"• {s}" for s in services)
+        + "\n".join(
+            f"• {s.get('name', 'Послуга')} — {s.get('price')} грн" if isinstance(s, dict) else f"• {s}"
+            for s in services
+        )
         + f"\n\n📅 Графік:\n"
         + "\n".join(f"• {s}" for s in schedule)
     )

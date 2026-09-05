@@ -72,6 +72,8 @@ if not PAYMENT_WEBHOOK_SECRET or PAYMENT_WEBHOOK_SECRET == "wayforpay-webhook-se
         "PAYMENT_WEBHOOK_SECRET is not set. "
         "Set a unique webhook secret in your environment variables or .env file."
     )
+if not ADMIN_IDS:
+    raise RuntimeError("ADMIN_IDS is not set. Add at least one Telegram administrator ID.")
 if CARD_ENCRYPTION_KEY:
     try:
         from cryptography.fernet import Fernet

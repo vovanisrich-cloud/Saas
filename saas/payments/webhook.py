@@ -61,7 +61,23 @@ async def complete_booking_after_payment(bot, pending: dict, *, transfer_payout:
         commission = round(amount * __import__("saas.config", fromlist=["PLATFORM_COMMISSION_PERCENT"]).PLATFORM_COMMISSION_PERCENT / 100)
         master_amount = amount - commission
         logger.info("Commission %s UAH kept, %s UAH sent to master", commission, master_amount)
-        await transfer_wayforpay_to_master_card(pending, amount=master_amount)
+        payout_status = await transfer_wayforpay_to_master_card(pending, amount=master_amount)
+        if payout_status != "success":
+            logger.error(
+                "Payment received but payout status is %s for request %s",
+                payout_status,
+                pending.get("request_id"),
+            )
+            from saas.config import ADMIN_IDS
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        f"Потрібна перевірка виплати: оплата отримана, але переказ не виконано "
+                        f"({payout_status}), request {pending.get('request_id')}.",
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to notify admin %s about payout issue: %s", admin_id, exc)
         notify_payload = {
             "client_telegram_id": pending.get("user_id"),
             "full_name": pending.get("full_name"),
@@ -75,6 +91,7 @@ async def complete_booking_after_payment(bot, pending: dict, *, transfer_payout:
             "amount": amount,
             "commission": commission,
             "master_amount": master_amount,
+            "payout_status": payout_status,
         }
     else:
         notify_payload = {
@@ -90,6 +107,7 @@ async def complete_booking_after_payment(bot, pending: dict, *, transfer_payout:
             "amount": int(pending.get("amount") or 0),
             "commission": 0,
             "master_amount": int(pending.get("amount") or 0),
+            "payout_status": "test",
         }
     await notify_booking_confirmed(bot, pending)
     owner_telegram_id = BookingDatabase.get_master_owner(pending.get("master_telegram_id"))

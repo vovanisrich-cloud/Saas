@@ -72,11 +72,16 @@ async def notify_master(bot: Bot, master_telegram_id: int | None, booking_info: 
     commission = int(booking_info.get("commission") or 0)
     master_amount = int(booking_info.get("master_amount") or (amount - commission))
     last4 = mask_card_last4(booking_info.get("card_number"))
-    if last4:
+    payout_status = booking_info.get("payout_status")
+    if payout_status == "test":
+        message += "\n🧪 Тестове підтвердження: реального переказу грошей не було"
+    elif payout_status == "success" and last4:
         message += (
             f"\n💳 На вашу картку •••• {last4} переказано {master_amount} грн\n"
             f"(передоплата {amount} грн мінус комісія сервісу {commission} грн)"
         )
+    elif payout_status in {"error", "skipped"}:
+        message += "\n⏳ Оплата отримана, виплата обробляється"
 
     try:
         await bot.send_message(master_telegram_id, message, parse_mode="HTML", reply_markup=reply_markup)

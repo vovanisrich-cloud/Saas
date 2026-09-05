@@ -242,14 +242,26 @@ async def process_service(callback: types.CallbackQuery, state: FSMContext):
     if callback.data and callback.data.startswith("master_service:"):
         try:
             service_index = int(callback.data.split(":", 1)[1])
-            service_name = master_services[service_index]
+            selected_service = master_services[service_index]
+            if isinstance(selected_service, dict):
+                service_name = selected_service.get("name")
+                service_price = selected_service.get("price")
+            else:
+                service_name = str(selected_service)
+                service_price = DEPOSIT_AMOUNT_UAH
         except (ValueError, IndexError, TypeError):
             service_name = None
     if not service_name:
         await callback.answer("Невідома послуга", show_alert=True)
         return
 
-    await state.update_data(service=service_name)
+    try:
+        service_price = int(service_price)
+    except (TypeError, ValueError):
+        service_price = DEPOSIT_AMOUNT_UAH
+    if service_price <= 0:
+        service_price = DEPOSIT_AMOUNT_UAH
+    await state.update_data(service=service_name, selected_service_price=service_price)
     client_profile = BookingDatabase.get_client_profile(callback.from_user.id)
     if client_profile:
         await state.update_data(
@@ -433,7 +445,8 @@ async def process_time(callback: types.CallbackQuery, state: FSMContext):
         service=user_data["service"],
         booking_date=booking_date,
         booking_time=booking_time,
-        amount=DEPOSIT_AMOUNT_UAH,
+        amount=int(user_data.get("selected_service_price") or DEPOSIT_AMOUNT_UAH),
+        service_price=int(user_data.get("selected_service_price") or DEPOSIT_AMOUNT_UAH),
         provider=PAYMENT_PROVIDER,
         expires_at=reservation_expires_at,
     )
@@ -463,6 +476,7 @@ async def process_time(callback: types.CallbackQuery, state: FSMContext):
             booking_date=booking_date,
             booking_time=booking_time,
             master_card_number=master_card_number or None,
+                amount=int(user_data.get("selected_service_price") or DEPOSIT_AMOUNT_UAH),
         )
     except Exception as exc:
         logger.exception("Failed to create WayForPay invoice for request %s", request_id)
@@ -509,7 +523,7 @@ async def process_time(callback: types.CallbackQuery, state: FSMContext):
         return
 
     payment_text = (
-        "Для підтвердження запису внесіть передоплату 200 грн\n\n"
+        f"Для підтвердження запису внесіть передоплату {int(user_data.get('selected_service_price') or DEPOSIT_AMOUNT_UAH)} грн\n\n"
         f"📅 <b>{date_display}</b>\n"
         f"🕒 <b>{booking_time}</b>\n"
         f"💅 <b>{user_data['service']}</b>"
@@ -517,7 +531,11 @@ async def process_time(callback: types.CallbackQuery, state: FSMContext):
     await safe_edit_text(
         callback.message,
         payment_text,
-        reply_markup=get_payment_keyboard(invoice_url, order_reference),
+        reply_markup=get_payment_keyboard(
+            invoice_url,
+            order_reference,
+            int(user_data.get("selected_service_price") or DEPOSIT_AMOUNT_UAH),
+        ),
         parse_mode="HTML",
     )
     await callback.answer()

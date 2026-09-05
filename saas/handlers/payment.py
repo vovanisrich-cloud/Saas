@@ -101,7 +101,7 @@ async def cmd_test_pay(message: types.Message, command: CommandObject):
         return
 
     await message.answer(
-        f"✅ [TEST] Бронь {booking_id} переведена в PAID без реальной оплаты. Уведомления отправлены."
+        f"✅ [TEST] Бронь {booking_id} підтверджено без реальної оплати та без переказу грошей. Уведомлення надіслані."
     )
 
 

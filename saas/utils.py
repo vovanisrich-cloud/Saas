@@ -71,13 +71,7 @@ async def safe_edit_text(message: types.Message, text: str, **kwargs):
 
 def _can_use_test_pay(user_id: int) -> bool:
     """Check if user can access /test_pay command."""
-    from .config import ADMIN_IDS, WAYFORPAY_DEBUG
-    from database import BookingDatabase
-    
+    from .config import ADMIN_IDS
     if user_id in ADMIN_IDS:
         return True
-    if ADMIN_IDS:
-        return False
-    if WAYFORPAY_DEBUG:
-        return True
-    return bool(BookingDatabase.get_master_profiles_by_owner(user_id))
+    return False

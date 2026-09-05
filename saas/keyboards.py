@@ -20,11 +20,17 @@ def get_phone_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def get_services_keyboard(services: list[str], prefix: str = "service") -> InlineKeyboardMarkup:
+def get_services_keyboard(services: list[dict], prefix: str = "service") -> InlineKeyboardMarkup:
     """Keyboard for selecting service."""
     keyboard = []
-    for index, service_name in enumerate(services):
-        keyboard.append([InlineKeyboardButton(text=service_name, callback_data=f"{prefix}:{index}")])
+    for index, service in enumerate(services):
+        if isinstance(service, dict):
+            service_name = service.get("name", "Послуга")
+            service_price = service.get("price")
+            label = f"{service_name} — {service_price} грн" if service_price else str(service_name)
+        else:
+            label = str(service)
+        keyboard.append([InlineKeyboardButton(text=label, callback_data=f"{prefix}:{index}")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
@@ -39,7 +45,10 @@ def build_master_welcome_text(profile: dict) -> str:
     """Build welcome message for master's booking page."""
     greeting = profile.get("greeting_text") or f"Привіт! Ви записуєтесь до майстра {profile.get('master_name', 'майстра')}."
     services = profile.get("services") or []
-    services_text = "\n".join(f"• {item}" for item in services) if services else "• Послуги ще не додані"
+    services_text = "\n".join(
+        f"• {item.get('name', 'Послуга')} — {item.get('price')} грн" if isinstance(item, dict) else f"• {item}"
+        for item in services
+    ) if services else "• Послуги ще не додані"
     schedule_text = format_master_schedule(profile.get("schedule"))
     return f"{greeting}\n\nПослуги:\n{services_text}\n\n{schedule_text}"
 
@@ -120,11 +129,11 @@ def get_master_confirmation_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def get_payment_keyboard(page_url: str, order_reference: str) -> InlineKeyboardMarkup:
+def get_payment_keyboard(page_url: str, order_reference: str, amount: int) -> InlineKeyboardMarkup:
     """Keyboard for payment actions."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"Оплатити 200 грн", url=page_url)],
+            [InlineKeyboardButton(text=f"Оплатити {amount} грн", url=page_url)],
             [InlineKeyboardButton(text="Перевірити оплату", callback_data=f"check_payment:{order_reference}")],
         ]
     )
@@ -138,7 +147,10 @@ def build_master_confirmation_preview(data: dict) -> str:
         f"<b>Перевір профіль майстра:</b>\n\n"
         f"👤 Ім'я: <b>{data.get('master_name', '')}</b>\n"
         f"💅 Послуги:\n"
-        + "\n".join(f"• {s}" for s in data.get("master_services", []))
+        + "\n".join(
+            f"• {s.get('name', 'Послуга')} — {s.get('price')} грн" if isinstance(s, dict) else f"• {s}"
+            for s in data.get("master_services", [])
+        )
         + f"\n\n⏱ Тривалість: <b>{data.get('duration_minutes', 60)} хв</b>\n"
         f"📅 Графік:\n"
         + "\n".join(f"• {s}" for s in data.get("schedule", []))
